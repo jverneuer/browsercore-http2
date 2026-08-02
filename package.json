@@ -1,0 +1,27 @@
+{
+  "name": "@browsercore/http2",
+  "version": "0.1.0",
+  "description": "HTTP/2 framing over any duplex byte stream. No knowledge of TLS or TCP — only HPACK + framing.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@browsercore/transport": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
