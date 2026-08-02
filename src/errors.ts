@@ -1,0 +1,110 @@
+/**
+ * Typed errors for @browsercore/http2.
+ *
+ * Errors are part of the API — every failure mode is an explicit type so callers
+ * can match on `kind` instead of parsing messages.
+ */
+
+/** Base class for all HTTP/2 errors. */
+export class Http2Error extends Error {
+    public readonly kind = "Http2Error" as const;
+    public override readonly cause: Error | undefined;
+
+    constructor(message: string, options?: { cause?: Error }) {
+        super(message, options);
+        this.name = new.target.name;
+        this.cause = options?.cause;
+    }
+}
+
+/** The peer sent a GOAWAY — the connection is going down. */
+export class GoawayReceivedError extends Error {
+    public readonly kind = "GoawayReceivedError" as const;
+    public readonly lastStreamId: number;
+    public readonly errorCode: number;
+    public readonly debugData: Uint8Array;
+    public override readonly cause: Error | undefined;
+
+    constructor(
+        lastStreamId: number,
+        errorCode: number,
+        debugData: Uint8Array,
+        options?: { cause?: Error },
+    ) {
+        super(`GOAWAY received: lastStreamId=${lastStreamId}, errorCode=${errorCode}`);
+        this.name = "GoawayReceivedError";
+        this.lastStreamId = lastStreamId;
+        this.errorCode = errorCode;
+        this.debugData = debugData;
+        this.cause = options?.cause;
+    }
+}
+
+/** The peer reset a specific stream with RST_STREAM. */
+export class RstStreamError extends Error {
+    public readonly kind = "RstStreamError" as const;
+    public readonly streamId: number;
+    public readonly errorCode: number;
+    public override readonly cause: Error | undefined;
+
+    constructor(streamId: number, errorCode: number, options?: { cause?: Error }) {
+        super(`RST_STREAM on stream ${streamId}: errorCode=${errorCode}`);
+        this.name = "RstStreamError";
+        this.streamId = streamId;
+        this.errorCode = errorCode;
+        this.cause = options?.cause;
+    }
+}
+
+/** A flow-control window was violated (send exceeded the peer's window). */
+export class FlowControlError extends Error {
+    public readonly kind = "FlowControlError" as const;
+    public readonly streamId: number | undefined;
+    public readonly windowSize: number;
+    public readonly attempted: number;
+    public override readonly cause: Error | undefined;
+
+    constructor(
+        windowSize: number,
+        attempted: number,
+        streamId?: number,
+        options?: { cause?: Error },
+    ) {
+        super(
+            `Flow control violation: attempted ${attempted} bytes against window ${windowSize} (stream ${streamId ?? "connection"})`,
+        );
+        this.name = "FlowControlError";
+        this.streamId = streamId;
+        this.windowSize = windowSize;
+        this.attempted = attempted;
+        this.cause = options?.cause;
+    }
+}
+
+/** A frame could not be parsed from the wire. */
+export class FrameParseError extends Error {
+    public readonly kind = "FrameParseError" as const;
+    public readonly offset: number;
+    public override readonly cause: Error | undefined;
+
+    constructor(offset: number, options?: { cause?: Error }) {
+        super(`Frame parse error at offset ${offset}`);
+        this.name = "FrameParseError";
+        this.offset = offset;
+        this.cause = options?.cause;
+    }
+}
+
+/** The peer acknowledged our SETTINGS frame never arrived within the timeout. */
+export class SettingsAckTimeoutError extends Error {
+    public readonly kind = "SettingsAckTimeoutError" as const;
+    public readonly timeoutMs: number;
+    public override readonly cause: Error | undefined;
+
+    constructor(timeoutMs: number, options?: { cause?: Error }) {
+        super(`SETTINGS ACK not received within ${timeoutMs}ms`);
+        this.name = "SettingsAckTimeoutError";
+        this.timeoutMs = timeoutMs;
+        this.cause = options?.cause;
+    }
+}
