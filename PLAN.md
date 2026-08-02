@@ -49,7 +49,7 @@ that exceed the window; emit `WINDOW_UPDATE` frames as the consumer drains.
 Tests: send up to the window limit — send blocks. Receive a `WINDOW_UPDATE` —
 send unblocks. Exceeding the window raises `FlowControlError`.
 
-## Step 7 — Settings exchange + ACK
+## Step 7 — Settings exchange + ACK (IN PROGRESS)
 
 Implement the connection preface: send client connection preface string + a
 SETTINGS frame, await the peer's SETTINGS + SETTINGS ACK. Apply the peer's
@@ -58,13 +58,17 @@ settings locally. Timeout with `SettingsAckTimeoutError`.
 Tests: a mock peer that replies with SETTINGS + ACK completes the handshake.
 A peer that never ACKs fires `SettingsAckTimeoutError`.
 
-## Step 8 — Multiplexing (concurrent streams)
+— integration tests skipped pending handshake-state-machine fix.
+
+## Step 8 — Multiplexing (concurrent streams) (IN PROGRESS)
 
 `Http2Connection.request()` opens an odd-numbered stream, sends HEADERS +
 DATA, and resolves when the response's END_STREAM arrives. Multiple requests
 run concurrently; responses are correlated by stream id.
 
 Tests: fire 5 concurrent requests; assert all 5 resolve with the right body.
+
+— integration tests skipped pending handshake-state-machine fix.
 
 ## Step 9 — GOAWAY + graceful shutdown
 
@@ -75,12 +79,14 @@ streams drain, then close. Handle inbound GOAWAY from the peer by raising
 Tests: sending GOAWAY stops new requests. Receiving GOAWAY raises
 `GoawayReceivedError` with the last stream id.
 
-## Step 10 — PING
+## Step 10 — PING (IN PROGRESS)
 
 Implement `ping()`: send a PING frame, await the PING ACK with matching opaque
 data. Used for liveness checks and RTT estimation.
 
 Tests: ping returns the same opaque data the peer echoed back.
+
+— integration tests skipped pending handshake-state-machine fix.
 
 ## Step 11 — PUSH_PROMISE (server push handling)
 
@@ -101,6 +107,8 @@ Tests: serialize/deserialize PRIORITY frames; assert fields round-trip.
 
 ## Definition of done
 
+Checklist reflects test status, not implementation status — see step markers.
+
 - [ ] Every frame type parses and serializes correctly.
 - [ ] HPACK static + dynamic tables encode/decode round-trip.
 - [ ] Stream state machine covers every RFC 7540 §5.1 transition.
@@ -112,3 +120,6 @@ Tests: serialize/deserialize PRIORITY frames; assert fields round-trip.
 - [ ] PUSH_PROMISE is handled (server push).
 - [ ] PRIORITY frames round-trip.
 - [ ] Every test in `tests/` passes; `tsc --build` is clean.
+
+Note: HPACK has no dedicated test file — HPACK coverage is indirect via the
+stream-manager tests that decode HEADERS frames.

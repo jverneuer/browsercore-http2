@@ -24,18 +24,23 @@ const decode = new TextDecoder();
 
 /** Read one full frame from the raw byte queue the server side receives. */
 async function readFrame(server: FakeTransport): Promise<Frame> {
-    const headerBytes = await server.read();
-    if (headerBytes.length < FRAME_HEADER_LENGTH) {
-        throw new Error(`short read: ${headerBytes.length}`);
-    }
-    const header = parseFrameHeaderBytes(headerBytes);
-    let buf = headerBytes;
-    const total = FRAME_HEADER_LENGTH + header.length;
-    while (buf.length < total) {
+    // FakeTransport delivers all buffered bytes per read() (simulating TCP
+    // coalescing), so a single read can contain multiple frames. Drain the
+    // transport's readBuffer first, top it up from the transport until we have
+    // a full frame, then stash any trailing bytes back in readBuffer.
+    while (server.readBuffer.length < FRAME_HEADER_LENGTH) {
         const extra = await server.read();
-        buf = concat(buf, extra);
+        server.readBuffer = concat(server.readBuffer, extra);
     }
-    return parseFrame(buf.subarray(0, total) as Uint8Array<ArrayBufferLike>);
+    const header = parseFrameHeaderBytes(server.readBuffer);
+    const total = FRAME_HEADER_LENGTH + header.length;
+    while (server.readBuffer.length < total) {
+        const extra = await server.read();
+        server.readBuffer = concat(server.readBuffer, extra);
+    }
+    const frame = parseFrame(server.readBuffer.subarray(0, total) as Uint8Array<ArrayBufferLike>);
+    server.readBuffer = server.readBuffer.subarray(total);
+    return frame;
 }
 
 /** Parse just the header fields from raw bytes (mirrors frame.parseFrameHeader). */
@@ -140,7 +145,7 @@ function runServer(server: FakeTransport, opts: { ackSettings?: boolean } = {}):
 }
 
 describe("connectHttp2 handshake", () => {
-    it.skip("completes the connection preface + SETTINGS/ACK handshake", async () => {
+    it("completes the connection preface + SETTINGS/ACK handshake", async () => {
         const { client, server } = createFakeTransportPair();
         const serverDone = runServer(server);
 
@@ -152,7 +157,7 @@ describe("connectHttp2 handshake", () => {
         await serverDone;
     });
 
-    it.skip("exposes the peer's settings after the handshake", async () => {
+    it("exposes the peer's settings after the handshake", async () => {
         const { client, server } = createFakeTransportPair();
         const serverDone = runServer(server);
         const conn = await connectHttp2({ transport: client });
@@ -164,7 +169,7 @@ describe("connectHttp2 handshake", () => {
 });
 
 describe("Http2Connection.request", () => {
-    it.skip("sends HEADERS + DATA and resolves with the response", async () => {
+    it("sends HEADERS + DATA and resolves with the response", async () => {
         const { client, server } = createFakeTransportPair();
         const serverDone = runServer(server);
         const conn = await connectHttp2({ transport: client });
@@ -186,7 +191,7 @@ describe("Http2Connection.request", () => {
         await serverDone;
     });
 
-    it.skip("multiplexes concurrent requests over one connection", async () => {
+    it("multiplexes concurrent requests over one connection", async () => {
         const { client, server } = createFakeTransportPair();
         const serverDone = runServer(server);
         const conn = await connectHttp2({ transport: client });
@@ -217,7 +222,7 @@ describe("Http2Connection.request", () => {
 });
 
 describe("Http2Connection.ping", () => {
-    it.skip("sends a PING and resolves with the echoed opaque data", async () => {
+    it("sends a PING and resolves with the echoed opaque data", async () => {
         const { client, server } = createFakeTransportPair();
         // Custom server that also handles PING (the base runServer ignores it).
         const serverDone = (async () => {
@@ -274,7 +279,7 @@ describe("Http2Connection.ping", () => {
 });
 
 describe("Http2Connection GOAWAY", () => {
-    it.skip("rejects in-flight requests when the peer sends GOAWAY", async () => {
+    it("rejects in-flight requests when the peer sends GOAWAY", async () => {
         const { client, server } = createFakeTransportPair();
         let serverDone: Promise<void>;
         // Server completes handshake, then immediately sends GOAWAY.
@@ -299,8 +304,14 @@ describe("Http2Connection GOAWAY", () => {
                     settings: {},
                 }),
             );
-            // Open a stream on the client, then GOAWAY before responding.
-            const req = await readFrame(server); // client HEADERS
+            // The client replies to our SETTINGS with a SETTINGS ACK before
+            // sending request HEADERS (RFC 7540 §6.5.3). Drain frames until we
+            // see the request HEADERS — mirroring runServer's loop.
+            let req: Frame;
+            do {
+                req = await readFrame(server);
+            } while (req.type === FrameType.SETTINGS);
+            void req;
             await server.write(
                 serializeFrame({
                     type: FrameType.GOAWAY,

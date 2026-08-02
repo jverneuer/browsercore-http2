@@ -276,13 +276,22 @@ describe("stream manager — flow control", () => {
         expect(stream.sendQueue.length).toBe(0);
     });
 
-    it.skip("connection-level WINDOW_UPDATE drains queued sends across streams", () => {
+    it("connection-level WINDOW_UPDATE drains queued sends across streams", () => {
         const cap = new FrameCapture();
         const mgr = createStreamManager(cap.sendFrame.bind(cap));
-        // Shrink both connection + stream windows to 64.
+        // Shrink the stream-level send window to 64 via INITIAL_WINDOW_SIZE so
+        // the 200-byte send is partially queued, then drained by WINDOW_UPDATE.
+        mgr.dispatch({
+            type: FrameType.SETTINGS,
+            flags: 0,
+            streamId: ID(0),
+            ack: false,
+            settings: { [0x4]: 64 }, // INITIAL_WINDOW_SIZE = 64
+        });
         cap.frames.length = 0;
 
         const s1 = mgr.openStream();
+        expect(s1.localWindow.size).toBe(64);
         const big = new Uint8Array(200).fill(0x62);
         mgr.sendData(s1.id, big, false);
         const sentBefore = cap.frames.filter((f) => f.type === FrameType.DATA).length;

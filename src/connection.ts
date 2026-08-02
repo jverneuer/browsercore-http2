@@ -28,8 +28,8 @@
  *   - PRIORITY frames are accepted but do not reorder the send queue.
  */
 
-import { randomInt } from "node:crypto";
 import type { EventEmitter } from "node:events";
+import { crypto } from "@browsercore/crypto";
 import type {
     Frame,
     Http2Connection,
@@ -42,7 +42,7 @@ import type {
 import { FrameType } from "./types.js";
 import { parseFrame, parseFrameHeader, serializeFrame, FRAME_HEADER_LENGTH } from "./frame/frame.js";
 import { encodeHeaders } from "./hpack/hpack.js";
-import { SettingsAckTimeoutError } from "./errors.js";
+import { SettingsAckTimeoutError, GoawayReceivedError } from "./errors.js";
 import { createStreamManager, type StreamManager } from "./stream/stream.js";
 
 /** The fixed client connection preface string (RFC 7540 §3.5). */
@@ -76,6 +76,8 @@ export class Http2ConnectionImpl implements Http2Connection {
     private _closing = false;
     /** Set once the connection is fully torn down. */
     private _closed = false;
+    /** GOAWAY frame the peer sent, if any — used to reject new requests. */
+    private _receivedGoaway: { lastStreamId: Http2StreamId; errorCode: number; debugData: Bytes } | undefined;
     /** Ids of currently-active client (odd) streams. */
     private readonly _activeClientStreams = new Set<Http2StreamId>();
     /** Resolvers waiting on a concurrency slot to free. */
@@ -98,7 +100,7 @@ export class Http2ConnectionImpl implements Http2Connection {
 
     public async request(req: Http2Request): Promise<Http2Response> {
         if (this._closing || this._closed) {
-            throw new Error("connection is closing");
+            throw this._closingError();
         }
         // Backpressure: wait until a concurrency slot is available.
         await this._acquireSlot();
@@ -113,7 +115,7 @@ export class Http2ConnectionImpl implements Http2Connection {
             if (this._closing || this._closed) {
                 this._activeClientStreams.delete(stream.id);
                 this._releaseSlot();
-                reject(new Error("connection is closing"));
+                reject(this._closingError());
                 return;
             }
 
@@ -250,6 +252,18 @@ export class Http2ConnectionImpl implements Http2Connection {
         }
     }
 
+    /**
+     * The error to raise for a request that cannot proceed because the
+     * connection is closing. If the peer sent a GOAWAY, surface that as a
+     * `GoawayReceivedError`; otherwise a generic "connection is closing".
+     */
+    private _closingError(): Error {
+        const goaway = this._receivedGoaway;
+        return goaway !== undefined
+            ? new GoawayReceivedError(goaway.lastStreamId, goaway.errorCode, goaway.debugData)
+            : new Error("connection is closing");
+    }
+
     /** Tear down the connection on a fatal transport / dispatch error. */
     private _handleFatal(err: Error): void {
         if (this._closed) return;
@@ -271,9 +285,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         //   - "goaway": stop accepting new work.
         //   - "streamClosed": free a concurrency slot.
         this._manager.on("goaway", (lastStreamId: Http2StreamId, errorCode: number, debugData: Bytes) => {
-            void lastStreamId;
-            void errorCode;
-            void debugData;
+            this._receivedGoaway = { lastStreamId, errorCode, debugData };
             this._closing = true;
         });
         this._manager.on("streamClosed", (streamId: Http2StreamId) => this._onStreamClosed(streamId));
@@ -282,10 +294,18 @@ export class Http2ConnectionImpl implements Http2Connection {
         void this._readLoop();
     }
 
+    /**
+     * Leftover bytes from the last transport read that did not form a complete
+     * frame. TCP coalesces writes, so a single read() can return more than one
+     * frame; we buffer the surplus here instead of dropping it.
+     */
+    private _readBuffer: Bytes = new Uint8Array(0);
+
     /** Read the next frame header + payload from the transport. */
     private async _readOneFrame(): Promise<Frame> {
-        // Read the 9-byte header first.
-        let headerBytes = await this._transport.read();
+        // Top up the header buffer from any leftovers, then from the transport,
+        // until we have the 9-byte frame header.
+        let headerBytes = this._readBuffer;
         while (headerBytes.length < FRAME_HEADER_LENGTH) {
             const extra = await this._transport.read();
             headerBytes = concat(headerBytes, extra);
@@ -300,6 +320,8 @@ export class Http2ConnectionImpl implements Http2Connection {
             const extra = await this._transport.read();
             frameBytes = concat(frameBytes, extra);
         }
+        // Stash any trailing bytes past this frame for the next call.
+        this._readBuffer = frameBytes.subarray(total) as Bytes;
         return parseFrame(frameBytes.subarray(0, total) as Bytes);
     }
 
@@ -361,8 +383,10 @@ function concat(a: Bytes, b: Bytes): Bytes {
 
 /** A random 64-bit opaque value for PING frames. */
 function randomUint64(): bigint {
-    const hi = BigInt(randomInt(0, 0x100000000));
-    const lo = BigInt(randomInt(0, 0x100000000));
+    const bytes = crypto.randomBytes(8);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const hi = BigInt(view.getUint32(0));
+    const lo = BigInt(view.getUint32(4));
     return (hi << 32n) | lo;
 }
 

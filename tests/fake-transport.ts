@@ -34,6 +34,14 @@ export class FakeTransport extends EventEmitter implements Transport {
     private _state: TransportState = { state: "open" };
     /** Bytes written by this side, buffered for the peer to read. */
     private readonly _writeBuffer: number[] = [];
+    /**
+     * Leftover bytes from a previous read() that the consumer did not consume.
+     * FakeTransport delivers all buffered bytes per read() (simulating TCP
+     * coalescing), so a single read can contain more than one frame; consumers
+     * that read frame-by-frame must hold the trailing bytes here for the next
+     * read. This field is public so test helpers can drain it.
+     */
+    public readBuffer: Uint8Array = new Uint8Array(0);
     /** Waiters blocked on a read when the buffer was empty. */
     private _pendingRead: ((data: Uint8Array) => void) | undefined;
     private _pendingReadReject: ((err: Error) => void) | undefined;
@@ -86,6 +94,19 @@ export class FakeTransport extends EventEmitter implements Transport {
             this._pendingRead = undefined;
             this._pendingReadReject = undefined;
             rejecter(new Error("transport closed"));
+        }
+        // Closing one end of the duplex pair must signal the peer: a real
+        // transport tears down both directions together, so the peer's pending
+        // reads reject and any subsequent read() sees a closed transport.
+        const peer = this._peer;
+        if (peer !== undefined && peer._state.state !== "closed") {
+            peer._state = { state: "closed", reason: { kind: "peer_close" } };
+            const peerRejecter = peer._pendingReadReject;
+            if (peerRejecter !== undefined) {
+                peer._pendingRead = undefined;
+                peer._pendingReadReject = undefined;
+                peerRejecter(new Error("transport closed"));
+            }
         }
         this.emit("close", false);
         return Promise.resolve();

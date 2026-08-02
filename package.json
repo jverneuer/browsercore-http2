@@ -1,6 +1,6 @@
 {
   "name": "@browsercore/http2",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "HTTP/2 framing over any duplex byte stream. No knowledge of TLS or TCP — only HPACK + framing.",
   "repository": {
     "type": "git",
@@ -32,9 +32,13 @@
     "vitest": "^2.1.8"
   },
   "dependencies": {
-    "@browsercore/transport": "^0.1.0"
+    "@browsercore/crypto": "latest",
+    "@browsercore/transport": "latest"
   },
   "engines": {
     "node": ">=24.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
