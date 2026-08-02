@@ -32,7 +32,7 @@
  *   majority of real servers.
  */
 
-import { EventEmitter } from "node:events";
+import type { EventEmitter } from "node:events";
 import type {
     FlowControlWindow,
     Frame,
@@ -104,8 +104,8 @@ const MAX_MAX_FRAME_SIZE = 16_777_215;
 /** Default MAX_CONCURRENT_STREAMS when the peer has not advertised one. */
 const DEFAULT_MAX_CONCURRENT_STREAMS = 100;
 
-/** Byte type alias that satisfies the `Uint8Array<ArrayBufferLike>` signatures. */
-type Bytes = Uint8Array<ArrayBufferLike>;
+/** Byte type alias that satisfies the `Uint8Array` wire signatures. */
+type Bytes = Uint8Array;
 
 // ---------------------------------------------------------------------------
 // Internal managed-stream shape
@@ -171,7 +171,9 @@ function concat(a: Bytes, b: Bytes): Bytes {
 /** Concatenate many byte arrays into one. */
 function concatAll(parts: readonly Bytes[]): Bytes {
     let total = 0;
-    for (const p of parts) total += p.length;
+    for (const p of parts) {
+        total += p.length;
+    }
     const out = new Uint8Array(total);
     let offset = 0;
     for (const p of parts) {
@@ -185,9 +187,124 @@ function concatAll(parts: readonly Bytes[]): Bytes {
 const DEFAULT_STATUS = 200;
 function parseStatus(headers: ReadonlyMap<string, string>): number {
     const raw = headers.get(":status");
-    if (raw === undefined) return DEFAULT_STATUS;
+    if (raw === undefined) {
+        return DEFAULT_STATUS;
+    }
     const value = Number(raw);
     return Number.isFinite(value) ? value : DEFAULT_STATUS;
+}
+
+// ---------------------------------------------------------------------------
+// EventTarget-based emitter
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal EventEmitter-shaped facade over the platform {@link EventTarget}.
+ *
+ * The `unicorn/prefer-event-target` rule forbids `new EventEmitter()`, but the
+ * manager's public contract (`StreamManager & EventEmitter`) and its consumers
+ * rely on the EventEmitter-style API (`.on`/`.once`/`.off`/`.emit` with variadic
+ * args). We back the manager with an EventTarget and translate: listeners are
+ * registered with `addEventListener`, and `emit` dispatches a `CustomEvent` whose
+ * `detail` carries the variadic args. A wrapper map lets `off`/`removeListener`
+ * match by the original listener reference, exactly as EventEmitter does.
+ */
+class StreamEventBridge extends EventTarget {
+    private readonly wrappers = new Map<(...args: unknown[]) => void, { wrapper: EventListener; event: string }>();
+
+    public on(event: string | symbol, listener: (...args: unknown[]) => void): void {
+        const wrapper = ((e: Event) => {
+            listener(...(e as CustomEvent<unknown[]>).detail);
+        }) as EventListener;
+        const key = event as string;
+        this.wrappers.set(listener, { wrapper, event: key });
+        this.addEventListener(key, wrapper);
+    }
+
+    public once(event: string | symbol, listener: (...args: unknown[]) => void): void {
+        const wrapper = ((e: Event) => {
+            this.wrappers.delete(listener);
+            listener(...(e as CustomEvent<unknown[]>).detail);
+        }) as EventListener;
+        const key = event as string;
+        this.wrappers.set(listener, { wrapper, event: key });
+        this.addEventListener(key, wrapper, { once: true });
+    }
+
+    public off(event: string | symbol, listener: (...args: unknown[]) => void): void {
+        const entry = this.wrappers.get(listener);
+        if (entry !== undefined) {
+            this.wrappers.delete(listener);
+            this.removeEventListener(event as string, entry.wrapper);
+        }
+    }
+
+    public removeListener(event: string | symbol, listener: (...args: unknown[]) => void): void {
+        this.off(event, listener);
+    }
+
+    public removeAllListeners(event?: string | symbol): void {
+        const target = event as string | undefined;
+        const toRemove: Array<(...args: unknown[]) => void> = [];
+        for (const [listener, entry] of this.wrappers) {
+            if (target === undefined || entry.event === target) {
+                this.removeEventListener(entry.event, entry.wrapper);
+                toRemove.push(listener);
+            }
+        }
+        for (const listener of toRemove) {
+            this.wrappers.delete(listener);
+        }
+    }
+
+    public emit(event: string | symbol, ...args: unknown[]): boolean {
+        return this.dispatchEvent(new CustomEvent<unknown[]>(event as string, { detail: args }));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Module-scope shared helpers
+//
+// These helpers only reference module-level symbols (`ManagedStream`,
+// `decodeHeaders`), so they are defined once at module scope rather than
+// rebuilt on every `createStreamManager()` call.
+// ---------------------------------------------------------------------------
+
+function decodePendingHeaders(stream: ManagedStream): void {
+    const block = Uint8Array.from(stream.pendingHeaderBytes);
+    stream.pendingHeaderBytes = [];
+    const decoded = decodeHeaders(block);
+    // decodeHeaders returns a ReadonlyMap; copy into a mutable Map so the
+    // public Http2Response.headers contract (ReadonlyMap) is satisfied.
+    stream.responseHeaders = new Map(decoded);
+    stream.headersComplete = true;
+}
+
+function handlePriority(): void {
+    // Priority scheduling is best-effort; the wire encoding round-trips in
+    // the frame layer. We intentionally do not reorder the send queue here.
+}
+
+function pushHeaderBytes(stream: ManagedStream, payload: Bytes): void {
+    for (let i = 0; i < payload.length; i++) {
+        const octet = payload[i];
+        if (octet === undefined) {
+            throw new RangeError(`header byte decode: buffer underflow at index ${i}`);
+        }
+        stream.pendingHeaderBytes.push(octet);
+    }
+}
+
+function transitionOnEndStream(stream: ManagedStream): void {
+    const s = stream.state;
+    if (s.state === "open") {
+        stream.state = { state: "remote_half_closed" };
+    } else if (s.state === "local_half_closed") {
+        stream.state = { state: "closed", reason: { kind: "normal" } };
+    } else if (s.state === "remote_reserved") {
+        // A server push whose HEADERS carried END_STREAM: reserved -> closed.
+        stream.state = { state: "closed", reason: { kind: "normal" } };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +339,7 @@ export function createStreamManager(
     /** Next client-initiated (odd) stream id. */
     let nextStreamId = 1;
 
-    const emitter = new EventEmitter();
+    const emitter = new StreamEventBridge();
 
     // --- frame I/O helpers -----------------------------------------------------
 
@@ -271,15 +388,23 @@ export function createStreamManager(
     // --- window bookkeeping ----------------------------------------------------
 
     function clampMaxFrameSize(value: number): number {
-        if (!Number.isFinite(value)) return DEFAULT_MAX_FRAME_SIZE;
-        if (value < MIN_MAX_FRAME_SIZE) return MIN_MAX_FRAME_SIZE;
-        if (value > MAX_MAX_FRAME_SIZE) return MAX_MAX_FRAME_SIZE;
+        if (!Number.isFinite(value)) {
+            return DEFAULT_MAX_FRAME_SIZE;
+        }
+        if (value < MIN_MAX_FRAME_SIZE) {
+            return MIN_MAX_FRAME_SIZE;
+        }
+        if (value > MAX_MAX_FRAME_SIZE) {
+            return MAX_MAX_FRAME_SIZE;
+        }
         return value;
     }
 
     function applyRemoteSettings(settings: Partial<Record<number, number>>): void {
         for (const [keyRaw, value] of Object.entries(settings)) {
-            if (value === undefined) continue;
+            if (value === undefined) {
+                continue;
+            }
             const key = Number(keyRaw);
             switch (key) {
                 // HEADER_TABLE_SIZE (0x1): HPACK table; informational here.
@@ -304,7 +429,9 @@ export function createStreamManager(
                         };
                     }
                     // A larger window may unblock queues — drain every stream.
-                    for (const s of streams.values()) drainSendQueue(s);
+                    for (const s of streams.values()) {
+                        drainSendQueue(s);
+                    }
                     break;
                 }
                 // MAX_FRAME_SIZE (0x5)
@@ -326,10 +453,16 @@ export function createStreamManager(
     /** Drain a single stream's send queue as far as the windows allow. */
     function drainSendQueue(stream: ManagedStream): void {
         while (stream.sendQueue.length > 0) {
-            if (connectionSendWindow <= 0) return;
-            if (stream.localWindow.size <= 0) return;
+            if (connectionSendWindow <= 0) {
+                return;
+            }
+            if (stream.localWindow.size <= 0) {
+                return;
+            }
             const cap = Math.min(maxFrameSize, connectionSendWindow, stream.localWindow.size);
-            if (cap <= 0) return;
+            if (cap <= 0) {
+                return;
+            }
             const chunkLen = Math.min(cap, stream.sendQueue.length);
             const isLast = stream.sendQueueEndStream && chunkLen === stream.sendQueue.length;
             const chunk = stream.sendQueue.subarray(0, chunkLen) as Bytes;
@@ -353,9 +486,13 @@ export function createStreamManager(
     }
 
     function maybeResolveResponse(stream: ManagedStream): void {
-        if (!stream.headersComplete || !stream.endStreamSeen) return;
+        if (!stream.headersComplete || !stream.endStreamSeen) {
+            return;
+        }
         const resolve = stream.resolve;
-        if (resolve === undefined) return;
+        if (resolve === undefined) {
+            return;
+        }
         stream.resolve = undefined;
         stream.reject = undefined;
         const headers = stream.responseHeaders;
@@ -374,21 +511,13 @@ export function createStreamManager(
 
     function rejectStream(stream: ManagedStream, err: Error): void {
         const reject = stream.reject;
-        if (reject === undefined) return;
+        if (reject === undefined) {
+            return;
+        }
         stream.resolve = undefined;
         stream.reject = undefined;
         finalizeStream(stream);
         reject(err);
-    }
-
-    function decodePendingHeaders(stream: ManagedStream): void {
-        const block = Uint8Array.from(stream.pendingHeaderBytes);
-        stream.pendingHeaderBytes = [];
-        const decoded = decodeHeaders(block);
-        // decodeHeaders returns a ReadonlyMap; copy into a mutable Map so the
-        // public Http2Response.headers contract (ReadonlyMap) is satisfied.
-        stream.responseHeaders = new Map(decoded);
-        stream.headersComplete = true;
     }
 
     // --- dispatch --------------------------------------------------------------
@@ -396,34 +525,46 @@ export function createStreamManager(
     function dispatch(frame: Frame): void {
         switch (frame.type) {
             case 0x0: // DATA
-                return handleData(frame);
+                handleData(frame);
+                return;
             case 0x1: // HEADERS
-                return handleHeaders(frame);
+                handleHeaders(frame);
+                return;
             case 0x2: // PRIORITY
-                return handlePriority();
+                handlePriority();
+                return;
             case 0x3: // RST_STREAM
-                return handleRstStream(frame);
+                handleRstStream(frame);
+                return;
             case 0x4: // SETTINGS
-                return handleSettings(frame);
+                handleSettings(frame);
+                return;
             case 0x5: // PUSH_PROMISE
-                return handlePushPromise(frame);
+                handlePushPromise(frame);
+                return;
             case 0x6: // PING
-                return handlePing(frame);
+                handlePing(frame);
+                return;
             case 0x7: // GOAWAY
-                return handleGoaway(frame);
+                handleGoaway(frame);
+                return;
             case 0x8: // WINDOW_UPDATE
-                return handleWindowUpdate(frame);
+                handleWindowUpdate(frame);
+                return;
             case 0x9: // CONTINUATION
-                return handleContinuation(frame);
+                handleContinuation(frame);
+                return;
             default:
                 // Unknown frame types MUST be ignored per RFC 7540 §4.1.
-                return assertNever(frame);
+                assertNever(frame);
         }
     }
 
     function handleData(frame: Extract<Frame, { type: 0x0 }>): void {
         const stream = streams.get(frame.streamId);
-        if (stream === undefined) return;
+        if (stream === undefined) {
+            return;
+        }
 
         const payload = frame.payload;
         const frameLen = payload.length;
@@ -452,7 +593,9 @@ export function createStreamManager(
             data = end > 0 ? (payload.subarray(1, end) as Bytes) : new Uint8Array(0);
         }
 
-        if (data.length > 0) stream.responseChunks.push(data);
+        if (data.length > 0) {
+            stream.responseChunks.push(data);
+        }
 
         const endStream = (frame.flags & 0x1) !== 0;
         if (endStream) {
@@ -464,11 +607,15 @@ export function createStreamManager(
 
     function handleHeaders(frame: Extract<Frame, { type: 0x1 }>): void {
         const stream = streams.get(frame.streamId);
-        if (stream === undefined) return;
+        if (stream === undefined) {
+            return;
+        }
 
         pushHeaderBytes(stream, frame.payload);
 
-        if (!frame.endHeaders) return; // expect CONTINUATION frames.
+        if (!frame.endHeaders) {
+            return; // expect CONTINUATION frames.
+        }
 
         decodePendingHeaders(stream);
 
@@ -492,14 +639,11 @@ export function createStreamManager(
         maybeResolveResponse(stream);
     }
 
-    function handlePriority(): void {
-        // Priority scheduling is best-effort; the wire encoding round-trips in
-        // the frame layer. We intentionally do not reorder the send queue here.
-    }
-
     function handleRstStream(frame: Extract<Frame, { type: 0x3 }>): void {
         const stream = streams.get(frame.streamId);
-        if (stream === undefined) return;
+        if (stream === undefined) {
+            return;
+        }
         stream.state = { state: "closed", reason: { kind: "rst_stream", errorCode: frame.errorCode } };
         rejectStream(stream, new RstStreamError(frame.streamId, frame.errorCode));
     }
@@ -557,11 +701,15 @@ export function createStreamManager(
         if (frame.streamId === 0) {
             connectionSendWindow += frame.windowSizeIncrement;
             // A connection window grow may unblock every stream's send queue.
-            for (const s of streams.values()) drainSendQueue(s);
+            for (const s of streams.values()) {
+                drainSendQueue(s);
+            }
             return;
         }
         const stream = streams.get(frame.streamId);
-        if (stream === undefined) return;
+        if (stream === undefined) {
+            return;
+        }
         stream.localWindow = {
             size: stream.localWindow.size + frame.windowSizeIncrement,
             initialSize: stream.localWindow.initialSize,
@@ -571,34 +719,18 @@ export function createStreamManager(
 
     function handleContinuation(frame: Extract<Frame, { type: 0x9 }>): void {
         const stream = streams.get(frame.streamId);
-        if (stream === undefined) return;
+        if (stream === undefined) {
+            return;
+        }
         pushHeaderBytes(stream, frame.payload);
-        if (!frame.endHeaders) return;
+        if (!frame.endHeaders) {
+            return;
+        }
         decodePendingHeaders(stream);
         if (stream.isPushPromise) {
             emitEvent("push", stream.id, stream.responseHeaders);
         }
         maybeResolveResponse(stream);
-    }
-
-    // --- small shared helpers --------------------------------------------------
-
-    function pushHeaderBytes(stream: ManagedStream, payload: Bytes): void {
-        for (let i = 0; i < payload.length; i++) {
-            stream.pendingHeaderBytes.push(payload[i]!);
-        }
-    }
-
-    function transitionOnEndStream(stream: ManagedStream): void {
-        const s = stream.state;
-        if (s.state === "open") {
-            stream.state = { state: "remote_half_closed" };
-        } else if (s.state === "local_half_closed") {
-            stream.state = { state: "closed", reason: { kind: "normal" } };
-        } else if (s.state === "remote_reserved") {
-            // A server push whose HEADERS carried END_STREAM: reserved -> closed.
-            stream.state = { state: "closed", reason: { kind: "normal" } };
-        }
     }
 
     // --- public StreamManager surface ------------------------------------------
@@ -608,7 +740,9 @@ export function createStreamManager(
         nextStreamId += 2;
         // Guard against 31-bit overflow: wrap back to a small odd id. (Practically
         // unreachable: ~2^30 concurrent client streams.)
-        if (nextStreamId < 0) nextStreamId = 1;
+        if (nextStreamId < 0) {
+            nextStreamId = 1;
+        }
         const stream = new ManagedStream(
             id,
             { size: remoteInitialWindowSize, initialSize: remoteInitialWindowSize },
@@ -625,9 +759,15 @@ export function createStreamManager(
 
     function sendData(streamId: Http2StreamId, data: Uint8Array, endStream: boolean): void {
         const stream = streams.get(streamId);
-        if (stream === undefined) return;
-        if (data.length > 0) stream.sendQueue = concat(stream.sendQueue, data);
-        if (endStream) stream.sendQueueEndStream = true;
+        if (stream === undefined) {
+            return;
+        }
+        if (data.length > 0) {
+            stream.sendQueue = concat(stream.sendQueue, data);
+        }
+        if (endStream) {
+            stream.sendQueueEndStream = true;
+        }
         drainSendQueue(stream);
     }
 
@@ -646,14 +786,17 @@ export function createStreamManager(
     }
 
     function abortAll(error: Error): void {
-        for (const stream of [...streams.values()]) {
+        for (const stream of streams.values()) {
             stream.state = { state: "closed", reason: { kind: "normal" } };
             rejectStream(stream, error);
         }
         streams.clear();
     }
 
-    const manager: StreamManager = {
+    // Mirror EventEmitter's core methods onto the manager so the returned object
+    // satisfies the `StreamManager & EventEmitter` intersection type and callers
+    // can subscribe to events through a single handle.
+    const manager = {
         openStream,
         dispatch,
         sendData,
@@ -663,23 +806,25 @@ export function createStreamManager(
         get maxConcurrentStreams(): number {
             return maxConcurrentStreams;
         },
-    };
+        on: (event: string | symbol, listener: (...args: unknown[]) => void) => {
+            emitter.on(event, listener);
+        },
+        once: (event: string | symbol, listener: (...args: unknown[]) => void) => {
+            emitter.once(event, listener);
+        },
+        off: (event: string | symbol, listener: (...args: unknown[]) => void) => {
+            emitter.off(event, listener);
+        },
+        removeListener: (event: string | symbol, listener: (...args: unknown[]) => void) => {
+            emitter.removeListener(event, listener);
+        },
+        removeAllListeners: (event?: string | symbol) => {
+            emitter.removeAllListeners(event);
+        },
+        emit: (event: string | symbol, ...args: unknown[]) => {
+            emitter.emit(event, ...args);
+        },
+    } as StreamManager & EventEmitter;
 
-    // Mirror EventEmitter's core methods onto the manager so the returned object
-    // satisfies the `StreamManager & EventEmitter` intersection type and callers
-    // can subscribe to events through a single handle.
-    Object.assign(manager, {
-        on: (event: string | symbol, listener: (...args: unknown[]) => void) =>
-            emitter.on(event, listener),
-        once: (event: string | symbol, listener: (...args: unknown[]) => void) =>
-            emitter.once(event, listener),
-        off: (event: string | symbol, listener: (...args: unknown[]) => void) =>
-            emitter.off(event, listener),
-        removeListener: (event: string | symbol, listener: (...args: unknown[]) => void) =>
-            emitter.removeListener(event, listener),
-        removeAllListeners: (event?: string | symbol) => emitter.removeAllListeners(event),
-        emit: (event: string | symbol, ...args: unknown[]) => emitter.emit(event, ...args),
-    });
-
-    return manager as StreamManager & EventEmitter;
+    return manager;
 }

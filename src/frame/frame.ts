@@ -60,13 +60,13 @@ function serializePayload(frame: Frame): Uint8Array {
             const out = new Uint8Array(5);
             const view = new DataView(out.buffer);
             const exclusive = frame.exclusive ? 0x80000000 : 0;
-            view.setUint32(0, (exclusive | (frame.streamDependency & 0x7fffffff)) >>> 0);
+            view.setUint32(0, Math.trunc(exclusive | (frame.streamDependency & 0x7fffffff)));
             out[4] = frame.weight & 0xff;
             return out;
         }
         case FrameType.RST_STREAM: {
             const out = new Uint8Array(4);
-            new DataView(out.buffer).setUint32(0, frame.errorCode >>> 0);
+            new DataView(out.buffer).setUint32(0, Math.trunc(frame.errorCode));
             return out;
         }
         case FrameType.SETTINGS: {
@@ -74,11 +74,10 @@ function serializePayload(frame: Frame): Uint8Array {
             const entries = Object.entries(frame.settings) as [string, number][];
             const out = new Uint8Array(entries.length * 6);
             const view = new DataView(out.buffer);
-            for (let i = 0; i < entries.length; i++) {
-                const [key, value] = entries[i]!;
+            entries.forEach(([key, value], i) => {
                 view.setUint16(i * 6, Number(key));
-                view.setUint32(i * 6 + 2, value >>> 0);
-            }
+                view.setUint32(i * 6 + 2, Math.trunc(value));
+            });
             return out;
         }
         case FrameType.PING: {
@@ -91,7 +90,7 @@ function serializePayload(frame: Frame): Uint8Array {
             const out = new Uint8Array(8 + frame.debugData.length);
             const view = new DataView(out.buffer);
             view.setUint32(0, frame.lastStreamId & 0x7fffffff);
-            view.setUint32(4, frame.errorCode >>> 0);
+            view.setUint32(4, Math.trunc(frame.errorCode));
             out.set(frame.debugData, 8);
             return out;
         }
@@ -101,7 +100,7 @@ function serializePayload(frame: Frame): Uint8Array {
             return out;
         }
         default:
-            assertNever(frame);
+            return assertNever(frame);
     }
 }
 

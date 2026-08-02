@@ -433,24 +433,33 @@ function encodeInteger(value: number, prefixBits: number): number[] {
         out.push(value);
         return out;
     }
+    // The prefix is filled with the sentinel (all ones == "more octets follow").
+    // Per RFC 7541 §5.1 the remainder (value - maxPrefix) is then always encoded
+    // as one or more continuation octets — even when it is zero.
     out.push(maxPrefix);
     let remaining = value - maxPrefix;
-    while (remaining > 0) {
+    while (true) {
         const octet = remaining % 128;
         remaining = Math.floor(remaining / 128);
         // Set the high bit if more octets follow.
-        out.push(remaining > 0 ? octet | 0x80 : octet);
+        if (remaining > 0) {
+            out.push(octet | 0x80);
+        } else {
+            out.push(octet);
+            break;
+        }
     }
     return out;
 }
 
 /** Read an integer starting at `buf[0]` with an N-bit prefix. Returns the value + new offset. */
 function decodeInteger(buf: Uint8Array, offset: number, prefixBits: number): { value: number; nextOffset: number } {
-    if (offset >= buf.length) {
+    const maxPrefix = (1 << prefixBits) - 1;
+    const firstOctet = buf[offset];
+    if (firstOctet === undefined) {
         throw new HpackError("integer decode: buffer underflow reading first octet");
     }
-    const maxPrefix = (1 << prefixBits) - 1;
-    const first = buf[offset]! & maxPrefix;
+    const first = firstOctet & maxPrefix;
     let position = offset + 1;
     if (first < maxPrefix) {
         return { value: first, nextOffset: position };
@@ -458,7 +467,10 @@ function decodeInteger(buf: Uint8Array, offset: number, prefixBits: number): { v
     let value = maxPrefix;
     let shift = 0;
     while (position < buf.length) {
-        const octet = buf[position]!;
+        const octet = buf[position];
+        if (octet === undefined) {
+            throw new HpackError("integer decode: buffer underflow in continuation octets");
+        }
         value += (octet & 0x7f) * 2 ** shift;
         position++;
         shift += 7;
@@ -484,7 +496,10 @@ function huffmanEncode(input: Uint8Array): number[] {
     let bitsInBuffer = 0;
     const out: number[] = [];
     for (const byte of input) {
-        const row = HUFFMAN_TABLE[byte]!;
+        const row = HUFFMAN_TABLE[byte];
+        if (row === undefined) {
+            throw new HpackError("huffman encode: invalid byte value");
+        }
         // Push `row.bits` bits of `row.code` (already MSB-aligned in the spec).
         buffer = (buffer << row.bits) | row.code;
         bitsInBuffer += row.bits;
@@ -521,7 +536,11 @@ function huffmanDecode(buf: Uint8Array, offset: number, length: number): { value
         // shift) so the buffer can hold more than 32 bits without the
         // sign-bit truncation that `<<` would otherwise cause.
         while (bitsAvailable < 30 && position < end) {
-            bitBuffer = bitBuffer * 256 + buf[position]!;
+            const octet = buf[position];
+            if (octet === undefined) {
+                throw new HpackError("huffman decode: buffer underflow reading octet");
+            }
+            bitBuffer = bitBuffer * 256 + octet;
             bitsAvailable += 8;
             position++;
         }
@@ -563,7 +582,7 @@ function huffmanDecode(buf: Uint8Array, offset: number, length: number): { value
 function decodeLatin1(bytes: readonly number[]): string {
     let out = "";
     for (const b of bytes) {
-        out += String.fromCharCode(b);
+        out += String.fromCodePoint(b);
     }
     return out;
 }
@@ -572,7 +591,10 @@ function decodeLatin1(bytes: readonly number[]): string {
 function encodeLatin1(s: string): Uint8Array {
     const out = new Uint8Array(s.length);
     for (let i = 0; i < s.length; i++) {
-        const code = s.charCodeAt(i);
+        const code = s.codePointAt(i);
+        if (code === undefined) {
+            throw new HpackError(`string encode: missing character at offset ${i}`);
+        }
         if (code > 0xff) {
             throw new HpackError(`string encode: non-latin1 character at offset ${i}: U+${code.toString(16)}`);
         }
@@ -591,10 +613,11 @@ interface DecodedString {
  * the Huffman flag: 1 = Huffman-encoded, 0 = literal octets.
  */
 function decodeString(buf: Uint8Array, offset: number): DecodedString {
-    if (offset >= buf.length) {
+    const flagOctet = buf[offset];
+    if (flagOctet === undefined) {
         throw new HpackError("string decode: buffer underflow reading length prefix");
     }
-    const huffmanFlag = (buf[offset]! & 0x80) !== 0;
+    const huffmanFlag = (flagOctet & 0x80) !== 0;
     const lengthResult = decodeInteger(buf, offset, 7);
     const length = lengthResult.value;
     const dataStart = lengthResult.nextOffset;
@@ -619,8 +642,12 @@ function encodeStringHuffman(value: string): number[] {
     const raw = encodeLatin1(value);
     const encoded = huffmanEncode(raw);
     const lengthOctets = encodeInteger(encoded.length, 7);
+    const firstLengthOctet = lengthOctets[0];
+    if (firstLengthOctet === undefined) {
+        throw new HpackError("string encode: empty length prefix");
+    }
     // Set the Huffman flag on the first octet.
-    lengthOctets[0]! |= 0x80;
+    lengthOctets[0] = firstLengthOctet | 0x80;
     return [...lengthOctets, ...encoded];
 }
 
@@ -656,21 +683,21 @@ interface DynamicEntry {
  */
 class DynamicTable {
     private entries: DynamicEntry[] = [];
-    private _size = 0;
-    private _limit: number;
+    private currentSize = 0;
+    private maxSize: number;
 
     constructor(limit: number = DEFAULT_TABLE_SIZE_LIMIT) {
-        this._limit = limit;
+        this.maxSize = limit;
     }
 
     /** Current size limit (bytes). */
     public get limit(): number {
-        return this._limit;
+        return this.maxSize;
     }
 
     /** Current total octet size of all entries (name + value + 32 each). */
     public get size(): number {
-        return this._size;
+        return this.currentSize;
     }
 
     /** Number of entries currently stored. */
@@ -693,8 +720,8 @@ class DynamicTable {
     public add(name: string, value: string): void {
         const entrySize = name.length + value.length + TABLE_ENTRY_OVERHEAD;
         this.entries.unshift({ name, value });
-        this._size += entrySize;
-        this.evictToFit(this._limit >= entrySize ? this._limit : entrySize);
+        this.currentSize += entrySize;
+        this.evictToFit(this.maxSize >= entrySize ? this.maxSize : entrySize);
     }
 
     /**
@@ -703,16 +730,16 @@ class DynamicTable {
      * *beginning* of the first header block; we apply it immediately here.
      */
     public setLimit(newLimit: number): void {
-        this._limit = newLimit;
+        this.maxSize = newLimit;
         this.evictToFit(newLimit);
     }
 
     /** Evict oldest entries until the total size fits within `maxSize`. */
-    private evictToFit(maxSize: number): void {
-        while (this._size > maxSize && this.entries.length > 0) {
+    private evictToFit(budget: number): void {
+        while (this.currentSize > budget && this.entries.length > 0) {
             const removed = this.entries.pop();
             if (removed) {
-                this._size -= removed.name.length + removed.value.length + TABLE_ENTRY_OVERHEAD;
+                this.currentSize -= removed.name.length + removed.value.length + TABLE_ENTRY_OVERHEAD;
             }
         }
     }
@@ -825,30 +852,19 @@ export class HpackEncoder {
     }
 
     private emitLiteralIncremental(name: string, value: string): number[] {
-        // 01_000000 prefix (0x40) + 6-bit name index (0 = new name) + value.
-        const out: number[] = [];
-        out.push(0x40);
-        out.push(...encodeStringHuffman(value));
-        out.push(...encodeStringHuffman(name));
-        return out;
+        // 01_000000 prefix (0x40) + 6-bit name index (0 = new name), then the
+        // name string followed by the value string (RFC 7541 §6.2.1).
+        return [0x40, ...encodeStringHuffman(name), ...encodeStringHuffman(value)];
     }
 
     private emitLiteralNoIndexing(name: string, value: string): number[] {
         // 0000_0000 prefix (0x00) + 4-bit name index (0) + value.
-        const out: number[] = [];
-        out.push(0x00);
-        out.push(...encodeStringHuffman(name));
-        out.push(...encodeStringHuffman(value));
-        return out;
+        return [0x00, ...encodeStringHuffman(name), ...encodeStringHuffman(value)];
     }
 
     private emitLiteralNeverIndexed(name: string, value: string): number[] {
         // 0001_0000 prefix (0x10) + 4-bit name index (0) + value.
-        const out: number[] = [];
-        out.push(0x10);
-        out.push(...encodeStringHuffman(name));
-        out.push(...encodeStringHuffman(value));
-        return out;
+        return [0x10, ...encodeStringHuffman(name), ...encodeStringHuffman(value)];
     }
 
     private encodeSizeUpdate(newLimit: number): number[] {
@@ -876,7 +892,10 @@ export class HpackDecoder {
         const out: HeaderField[] = [];
         let offset = 0;
         while (offset < buf.length) {
-            const octet = buf[offset]!;
+            const octet = buf[offset];
+            if (octet === undefined) {
+                throw new HpackError("header decode: buffer underflow reading octet");
+            }
             // The high bit distinguishes indexed (1xxxxxxx) from the rest.
             if ((octet & 0x80) !== 0) {
                 // §6.1 — Indexed Header Field.
@@ -906,12 +925,11 @@ export class HpackDecoder {
                 offset = this.decodeLiteral(buf, offset, out, "no_indexing");
                 continue;
             }
-            // §6.2.3 — Literal never indexed (0001xxxx).
-            if ((octet & 0xf0) === 0x10) {
-                offset = this.decodeLiteral(buf, offset, out, "never_indexed");
-                continue;
-            }
-            throw new HpackError(`header block decode: unknown prefix 0x${octet.toString(16)} at offset ${offset}`);
+            // §6.2.3 — Literal never indexed (0001xxxx). The five prefix patterns
+            // above (indexed 1xxxxxxx, incremental 01xxxxxx, size update
+            // 001xxxxx, no indexing 0000xxxx) exhaust the high-bit space, leaving
+            // only 0001xxxx — so this is the final, unconditional case.
+            offset = this.decodeLiteral(buf, offset, out, "never_indexed");
         }
         return out;
     }
@@ -933,7 +951,10 @@ export class HpackDecoder {
     ): number {
         // Both "with indexing" and "without indexing" forms share the same prefix
         // layout: 6-bit or 4-bit name index, then optional name string, then value.
-        const octet = buf[offset]!;
+        const octet = buf[offset];
+        if (octet === undefined) {
+            throw new HpackError("literal decode: buffer underflow reading prefix octet");
+        }
         const prefixBits = (octet & 0xc0) === 0x40 ? 6 : 4;
         const nameIndexResult = decodeInteger(buf, offset, prefixBits);
         const nameIndex = nameIndexResult.value;

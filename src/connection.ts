@@ -30,16 +30,16 @@
 
 import type { EventEmitter } from "node:events";
 import { crypto } from "@browsercore/crypto";
-import type {
-    Frame,
-    Http2Connection,
-    Http2Options,
-    Http2Request,
-    Http2Response,
-    Http2SettingsMap,
-    Http2StreamId,
+import {
+    FrameType,
+    type Frame,
+    type Http2Connection,
+    type Http2Options,
+    type Http2Request,
+    type Http2Response,
+    type Http2SettingsMap,
+    type Http2StreamId,
 } from "./types.js";
-import { FrameType } from "./types.js";
 import { parseFrame, parseFrameHeader, serializeFrame, FRAME_HEADER_LENGTH } from "./frame/frame.js";
 import { encodeHeaders } from "./hpack/hpack.js";
 import { SettingsAckTimeoutError, GoawayReceivedError } from "./errors.js";
@@ -54,8 +54,8 @@ const DEFAULT_SETTINGS_ACK_TIMEOUT_MS = 5_000;
 /** Empty byte array constant for optional debug data. */
 const EMPTY_BYTES = new Uint8Array(0);
 
-/** Byte type alias matching the `Uint8Array<ArrayBufferLike>` wire signatures. */
-type Bytes = Uint8Array<ArrayBufferLike>;
+/** Byte type alias matching the `Uint8Array` wire signatures. */
+type Bytes = Uint8Array;
 
 /**
  * Concrete HTTP/2 connection. The public surface matches the fixed
@@ -66,22 +66,22 @@ export class Http2ConnectionImpl implements Http2Connection {
     public settings: Http2SettingsMap;
 
     /** The underlying byte-stream transport. */
-    private readonly _transport: Http2Options["transport"];
+    private readonly transport: Http2Options["transport"];
     /** Stream manager (also an EventEmitter for connection-level signals). */
-    private readonly _manager: StreamManager & EventEmitter;
+    private readonly manager: StreamManager & EventEmitter;
     /** Serializes + writes a frame to the transport. */
-    private readonly _sendFrame: (frame: Frame) => void;
+    private readonly sendFrame: (frame: Frame) => void;
 
     /** Set once the connection begins graceful shutdown (GOAWAY sent/received). */
-    private _closing = false;
+    private closing = false;
     /** Set once the connection is fully torn down. */
-    private _closed = false;
+    private closed = false;
     /** GOAWAY frame the peer sent, if any — used to reject new requests. */
-    private _receivedGoaway: { lastStreamId: Http2StreamId; errorCode: number; debugData: Bytes } | undefined;
+    private receivedGoaway: { lastStreamId: Http2StreamId; errorCode: number; debugData: Bytes } | undefined;
     /** Ids of currently-active client (odd) streams. */
-    private readonly _activeClientStreams = new Set<Http2StreamId>();
+    private readonly activeClientStreams = new Set<Http2StreamId>();
     /** Resolvers waiting on a concurrency slot to free. */
-    private readonly _slotWaiters: Array<() => void> = [];
+    private readonly slotWaiters: Array<() => void> = [];
 
     public constructor(
         id: string,
@@ -91,49 +91,49 @@ export class Http2ConnectionImpl implements Http2Connection {
     ) {
         this.id = id;
         this.settings = options.initialSettings ?? {};
-        this._transport = options.transport;
-        this._manager = manager;
-        this._sendFrame = sendFrame;
+        this.transport = options.transport;
+        this.manager = manager;
+        this.sendFrame = sendFrame;
     }
 
     // --- public Http2Connection surface ----------------------------------------
 
     public async request(req: Http2Request): Promise<Http2Response> {
-        if (this._closing || this._closed) {
-            throw this._closingError();
+        if (this.closing || this.closed) {
+            throw this.closingError();
         }
         // Backpressure: wait until a concurrency slot is available.
-        await this._acquireSlot();
+        await this.acquireSlot();
 
-        const stream = this._manager.openStream();
-        this._activeClientStreams.add(stream.id);
+        const stream = this.manager.openStream();
+        this.activeClientStreams.add(stream.id);
 
         const endStreamNoBody = req.body === undefined || req.body.length === 0;
 
         return new Promise<Http2Response>((resolve, reject) => {
             // If the connection tore down while we were acquiring a slot, bail.
-            if (this._closing || this._closed) {
-                this._activeClientStreams.delete(stream.id);
-                this._releaseSlot();
-                reject(this._closingError());
+            if (this.closing || this.closed) {
+                this.activeClientStreams.delete(stream.id);
+                this.releaseSlot();
+                reject(this.closingError());
                 return;
             }
 
-            this._manager.expectResponse(stream.id, resolve, reject);
-            this._sendHeaders(stream.id, req, endStreamNoBody);
+            this.manager.expectResponse(stream.id, resolve, reject);
+            this.sendHeaders(stream.id, req, endStreamNoBody);
 
             if (endStreamNoBody) {
                 // HEADERS already carried END_STREAM; nothing more to send.
                 return;
             }
             // Feed the body through the stream manager's flow-controlled send path.
-            this._manager.sendData(stream.id, req.body ?? EMPTY_BYTES, true);
+            this.manager.sendData(stream.id, req.body ?? EMPTY_BYTES, true);
         });
     }
 
-    public async goaway(lastStreamId: Http2StreamId, errorCode: number, debugData?: Bytes): Promise<void> {
-        this._closing = true;
-        this._sendFrame({
+    public goaway(lastStreamId: Http2StreamId, errorCode: number, debugData?: Bytes): Promise<void> {
+        this.closing = true;
+        this.sendFrame({
             type: FrameType.GOAWAY,
             flags: 0,
             streamId: 0 as Http2StreamId,
@@ -141,12 +141,13 @@ export class Http2ConnectionImpl implements Http2Connection {
             errorCode,
             debugData: debugData ?? EMPTY_BYTES,
         });
+        return Promise.resolve();
     }
 
-    public async ping(opaqueData?: bigint): Promise<bigint> {
+    public ping(opaqueData?: bigint): Promise<bigint> {
         const data = opaqueData ?? randomUint64();
         return new Promise<bigint>((resolve, reject) => {
-            if (this._closed) {
+            if (this.closed) {
                 reject(new Error("connection is closed"));
                 return;
             }
@@ -154,12 +155,12 @@ export class Http2ConnectionImpl implements Http2Connection {
             // unrelated ACKs are ignored (the handler self-removes on match).
             const handler = (acked: bigint): void => {
                 if (acked === data) {
-                    this._manager.off("pingAck", handler);
+                    this.manager.off("pingAck", handler);
                     resolve(acked);
                 }
             };
-            this._manager.on("pingAck", handler);
-            this._sendFrame({
+            this.manager.on("pingAck", handler);
+            this.sendFrame({
                 type: FrameType.PING,
                 flags: 0,
                 streamId: 0 as Http2StreamId,
@@ -170,12 +171,14 @@ export class Http2ConnectionImpl implements Http2Connection {
     }
 
     public async close(): Promise<void> {
-        if (this._closed) return;
-        this._closing = true;
+        if (this.closed) {
+            return;
+        }
+        this.closing = true;
         // Graceful shutdown: GOAWAY(lastStreamId=0) then close the transport.
         // Ignore errors here — the transport may already be gone.
         try {
-            this._sendFrame({
+            this.sendFrame({
                 type: FrameType.GOAWAY,
                 flags: 0,
                 streamId: 0 as Http2StreamId,
@@ -187,29 +190,28 @@ export class Http2ConnectionImpl implements Http2Connection {
             // best-effort
         }
         // Reject anything still in flight, then drop the transport.
-        this._manager.abortAll(new Error("connection closed"));
-        this._activeClientStreams.clear();
-        this._drainSlotWaiters();
-        this._closed = true;
-        await this._transport.close({ kind: "client_close" });
+        this.manager.abortAll(new Error("connection closed"));
+        this.activeClientStreams.clear();
+        this.drainSlotWaiters();
+        this.closed = true;
+        await this.transport.close({ kind: "client_close" });
     }
 
     // --- frame I/O -------------------------------------------------------------
 
     /** Encode request pseudo-headers + headers and send a HEADERS frame. */
-    private _sendHeaders(streamId: Http2StreamId, req: Http2Request, endStream: boolean): void {
-        const headers = new Map<string, string>();
-        headers.set(":method", req.method);
-        headers.set(":scheme", req.scheme);
-        headers.set(":authority", req.authority);
-        headers.set(":path", req.path);
-        for (const [key, value] of req.headers) {
-            headers.set(key, value);
-        }
+    private sendHeaders(streamId: Http2StreamId, req: Http2Request, endStream: boolean): void {
+        const headers = new Map<string, string>([
+            [":method", req.method],
+            [":scheme", req.scheme],
+            [":authority", req.authority],
+            [":path", req.path],
+            ...Array.from(req.headers.entries()),
+        ]);
         const encoded = encodeHeaders(headers);
         // END_HEADERS (0x4) always set; END_STREAM (0x1) when there is no body.
         const flags = 0x4 | (endStream ? 0x1 : 0);
-        this._sendFrame({
+        this.sendFrame({
             type: FrameType.HEADERS,
             flags,
             streamId,
@@ -223,32 +225,38 @@ export class Http2ConnectionImpl implements Http2Connection {
     // --- concurrency slot pool -------------------------------------------------
 
     /** Resolve when a concurrency slot is free, honoring MAX_CONCURRENT_STREAMS. */
-    private async _acquireSlot(): Promise<void> {
+    private async acquireSlot(): Promise<void> {
         while (
-            !this._closing &&
-            !this._closed &&
-            this._activeClientStreams.size >= this._manager.maxConcurrentStreams
+            !this.closing &&
+            !this.closed &&
+            this.activeClientStreams.size >= this.manager.maxConcurrentStreams
         ) {
-            await new Promise<void>((resolve) => this._slotWaiters.push(resolve));
+            await new Promise<void>((resolve) => {
+                this.slotWaiters.push(resolve);
+            });
         }
     }
 
     /** Release one slot and wake a waiter (if any). */
-    private _releaseSlot(): void {
-        const waiter = this._slotWaiters.shift();
-        if (waiter !== undefined) waiter();
+    private releaseSlot(): void {
+        const waiter = this.slotWaiters.shift();
+        if (waiter !== undefined) {
+            waiter();
+        }
     }
 
     /** Wake every waiting request (used on shutdown). */
-    private _drainSlotWaiters(): void {
-        for (const waiter of this._slotWaiters) waiter();
-        this._slotWaiters.length = 0;
+    private drainSlotWaiters(): void {
+        for (const waiter of this.slotWaiters) {
+            waiter();
+        }
+        this.slotWaiters.length = 0;
     }
 
     /** Bookkeeping when the manager reports a stream closed. */
-    private _onStreamClosed(streamId: Http2StreamId): void {
-        if (this._activeClientStreams.delete(streamId)) {
-            this._releaseSlot();
+    private onStreamClosed(streamId: Http2StreamId): void {
+        if (this.activeClientStreams.delete(streamId)) {
+            this.releaseSlot();
         }
     }
 
@@ -257,21 +265,23 @@ export class Http2ConnectionImpl implements Http2Connection {
      * connection is closing. If the peer sent a GOAWAY, surface that as a
      * `GoawayReceivedError`; otherwise a generic "connection is closing".
      */
-    private _closingError(): Error {
-        const goaway = this._receivedGoaway;
-        return goaway !== undefined
-            ? new GoawayReceivedError(goaway.lastStreamId, goaway.errorCode, goaway.debugData)
-            : new Error("connection is closing");
+    private closingError(): Error {
+        const goaway = this.receivedGoaway;
+        return goaway === undefined
+            ? new Error("connection is closing")
+            : new GoawayReceivedError(goaway.lastStreamId, goaway.errorCode, goaway.debugData);
     }
 
     /** Tear down the connection on a fatal transport / dispatch error. */
-    private _handleFatal(err: Error): void {
-        if (this._closed) return;
-        this._closing = true;
-        this._manager.abortAll(err);
-        this._activeClientStreams.clear();
-        this._drainSlotWaiters();
-        this._closed = true;
+    private handleFatal(err: Error): void {
+        if (this.closed) {
+            return;
+        }
+        this.closing = true;
+        this.manager.abortAll(err);
+        this.activeClientStreams.clear();
+        this.drainSlotWaiters();
+        this.closed = true;
     }
 
     // --- read loop + bootstrap -------------------------------------------------
@@ -284,14 +294,16 @@ export class Http2ConnectionImpl implements Http2Connection {
         // The manager emits connection-level signals we need to react to:
         //   - "goaway": stop accepting new work.
         //   - "streamClosed": free a concurrency slot.
-        this._manager.on("goaway", (lastStreamId: Http2StreamId, errorCode: number, debugData: Bytes) => {
-            this._receivedGoaway = { lastStreamId, errorCode, debugData };
-            this._closing = true;
+        this.manager.on("goaway", (lastStreamId: Http2StreamId, errorCode: number, debugData: Bytes) => {
+            this.receivedGoaway = { lastStreamId, errorCode, debugData };
+            this.closing = true;
         });
-        this._manager.on("streamClosed", (streamId: Http2StreamId) => this._onStreamClosed(streamId));
+        this.manager.on("streamClosed", (streamId: Http2StreamId) => {
+            this.onStreamClosed(streamId);
+        });
 
         // Fire-and-forget the read loop; it runs until the transport closes.
-        void this._readLoop();
+        void this.readLoop();
     }
 
     /**
@@ -299,15 +311,15 @@ export class Http2ConnectionImpl implements Http2Connection {
      * frame. TCP coalesces writes, so a single read() can return more than one
      * frame; we buffer the surplus here instead of dropping it.
      */
-    private _readBuffer: Bytes = new Uint8Array(0);
+    private readBuffer: Bytes = new Uint8Array(0);
 
     /** Read the next frame header + payload from the transport. */
-    private async _readOneFrame(): Promise<Frame> {
+    private async readOneFrame(): Promise<Frame> {
         // Top up the header buffer from any leftovers, then from the transport,
         // until we have the 9-byte frame header.
-        let headerBytes = this._readBuffer;
+        let headerBytes = this.readBuffer;
         while (headerBytes.length < FRAME_HEADER_LENGTH) {
-            const extra = await this._transport.read();
+            const extra = await this.transport.read();
             headerBytes = concat(headerBytes, extra);
         }
         const header = parseFrameHeader(headerBytes);
@@ -317,11 +329,11 @@ export class Http2ConnectionImpl implements Http2Connection {
         // header or in subsequent reads).
         let frameBytes = headerBytes;
         while (frameBytes.length < total) {
-            const extra = await this._transport.read();
+            const extra = await this.transport.read();
             frameBytes = concat(frameBytes, extra);
         }
         // Stash any trailing bytes past this frame for the next call.
-        this._readBuffer = frameBytes.subarray(total) as Bytes;
+        this.readBuffer = frameBytes.subarray(total) as Bytes;
         return parseFrame(frameBytes.subarray(0, total) as Bytes);
     }
 
@@ -329,23 +341,23 @@ export class Http2ConnectionImpl implements Http2Connection {
      * Main read loop: read frames, dispatch them to the stream manager. On a
      * transport error or close, tear the connection down.
      */
-    private async _readLoop(): Promise<void> {
+    private async readLoop(): Promise<void> {
         try {
-            while (!this._closed) {
-                const frame = await this._readOneFrame();
+            while (!this.closed) {
+                const frame = await this.readOneFrame();
                 try {
-                    this._manager.dispatch(frame);
+                    this.manager.dispatch(frame);
                 } catch (err) {
                     // A dispatch error (e.g. malformed HPACK) is fatal for the
                     // connection per RFC 7540 §4.2 — GOAWAY + teardown.
-                    this._handleFatal(err instanceof Error ? err : new Error(String(err)));
+                    this.handleFatal(err instanceof Error ? err : new Error(String(err)));
                     return;
                 }
             }
         } catch (err) {
             // transport.read() rejected: socket closed / error.
-            if (!this._closed) {
-                this._handleFatal(err instanceof Error ? err : new Error(String(err)));
+            if (!this.closed) {
+                this.handleFatal(err instanceof Error ? err : new Error(String(err)));
             }
         }
     }
@@ -354,17 +366,17 @@ export class Http2ConnectionImpl implements Http2Connection {
     public waitForSettingsAck(timeoutMs: number): Promise<void> {
         return new Promise<void>((resolve, reject) => {
             const timer = setTimeout(() => {
-                this._manager.off("settingsAck", onAck);
+                this.manager.off("settingsAck", onAck);
                 reject(new SettingsAckTimeoutError(timeoutMs));
-                this._handleFatal(new SettingsAckTimeoutError(timeoutMs));
+                this.handleFatal(new SettingsAckTimeoutError(timeoutMs));
             }, timeoutMs);
 
             const onAck = (): void => {
                 clearTimeout(timer);
-                this._manager.off("settingsAck", onAck);
+                this.manager.off("settingsAck", onAck);
                 resolve();
             };
-            this._manager.once("settingsAck", onAck);
+            this.manager.once("settingsAck", onAck);
         });
     }
 }
