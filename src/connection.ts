@@ -231,6 +231,7 @@ export class Http2ConnectionImpl implements Http2Connection {
             !this.closed &&
             this.activeClientStreams.size >= this.manager.maxConcurrentStreams
         ) {
+            // oxlint-disable-next-line no-await-in-loop -- deliberate one-at-a-time backpressure: each slot frees exactly one waiter
             await new Promise<void>((resolve) => {
                 this.slotWaiters.push(resolve);
             });
@@ -319,6 +320,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         // until we have the 9-byte frame header.
         let headerBytes = this.readBuffer;
         while (headerBytes.length < FRAME_HEADER_LENGTH) {
+            // oxlint-disable-next-line no-await-in-loop -- each read depends on accumulated bytes; ordering is inherent
             const extra = await this.transport.read();
             headerBytes = concat(headerBytes, extra);
         }
@@ -329,6 +331,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         // header or in subsequent reads).
         let frameBytes = headerBytes;
         while (frameBytes.length < total) {
+            // oxlint-disable-next-line no-await-in-loop -- each read depends on accumulated bytes; ordering is inherent
             const extra = await this.transport.read();
             frameBytes = concat(frameBytes, extra);
         }
@@ -344,6 +347,7 @@ export class Http2ConnectionImpl implements Http2Connection {
     private async readLoop(): Promise<void> {
         try {
             while (!this.closed) {
+                // oxlint-disable-next-line no-await-in-loop -- live socket read loop: frames must be processed in arrival order
                 const frame = await this.readOneFrame();
                 try {
                     this.manager.dispatch(frame);
