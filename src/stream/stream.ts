@@ -329,6 +329,15 @@ export function createStreamManager(
 ): StreamManager & EventEmitter {
     const streams = new Map<Http2StreamId, ManagedStream>();
 
+    /**
+     * In-flight PUSH_PROMISE header blocks awaiting CONTINUATION. Keyed by the
+     * *client*-stream id (the stream id a CONTINUATION after PUSH_PROMISE
+     * carries per RFC 7540 §6.10), mapping to the promised stream whose header
+     * block is being reassembled. Set when a PUSH_PROMISE omits END_HEADERS,
+     * cleared once END_HEADERS arrives.
+     */
+    const pendingPushContinuation = new Map<Http2StreamId, Http2StreamId>();
+
     /** Peer-advertised initial window size (SETTINGS_INITIAL_WINDOW_SIZE). */
     let remoteInitialWindowSize = DEFAULT_INITIAL_WINDOW_SIZE;
     let maxConcurrentStreams = DEFAULT_MAX_CONCURRENT_STREAMS;
@@ -512,6 +521,10 @@ export function createStreamManager(
     function rejectStream(stream: ManagedStream, err: Error): void {
         const reject = stream.reject;
         if (reject === undefined) {
+            // No resolver is registered, but the stream must still be finalized
+            // (state -> closed, removed from the table, `streamClosed` emitted)
+            // so it does not leak.
+            finalizeStream(stream);
             return;
         }
         stream.resolve = undefined;
@@ -631,11 +644,10 @@ export function createStreamManager(
             transitionOnEndStream(stream);
         }
 
-        // For a push stream, the HEADERS carry the promised request headers.
-        if (stream.isPushPromise) {
-            emitEvent("push", stream.id, stream.responseHeaders);
-        }
-
+        // Note: `"push"` is NOT emitted here. The PUSH_PROMISE's request headers
+        // are surfaced by handlePushPromise (or handleContinuation when the block
+        // completes there); a HEADERS frame on a push stream carries the pushed
+        // *response*, surfaced via `"pushResponse"` once the response completes.
         maybeResolveResponse(stream);
     }
 
@@ -670,9 +682,15 @@ export function createStreamManager(
         pushHeaderBytes(promised, frame.payload);
         if (frame.endHeaders) {
             decodePendingHeaders(promised);
+            // `push` is emitted exactly once: when the PUSH_PROMISE header block
+            // (the promised *request* headers) reaches END_HEADERS.
             emitEvent("push", promised.id, promised.responseHeaders);
+        } else {
+            // The following CONTINUATION carries the client-stream id (RFC 7540
+            // §6.10); remember it maps to this promised stream so the block is
+            // reassembled on the right stream.
+            pendingPushContinuation.set(frame.streamId, frame.promisedStreamId);
         }
-        // CONTINUATION frames follow until END_HEADERS; handled in dispatch.
     }
 
     function handlePing(frame: Extract<Frame, { type: 0x6 }>): void {
@@ -718,7 +736,11 @@ export function createStreamManager(
     }
 
     function handleContinuation(frame: Extract<Frame, { type: 0x9 }>): void {
-        const stream = streams.get(frame.streamId);
+        // A CONTINUATION after PUSH_PROMISE carries the client-stream id, but its
+        // header block belongs to the *promised* stream (RFC 7540 §6.10). For an
+        // ordinary HEADERS continuation, fall back to frame.streamId.
+        const promisedId = pendingPushContinuation.get(frame.streamId);
+        const stream = streams.get(promisedId ?? frame.streamId);
         if (stream === undefined) {
             return;
         }
@@ -726,8 +748,13 @@ export function createStreamManager(
         if (!frame.endHeaders) {
             return;
         }
+        if (promisedId !== undefined) {
+            pendingPushContinuation.delete(frame.streamId);
+        }
         decodePendingHeaders(stream);
         if (stream.isPushPromise) {
+            // Completing a PUSH_PROMISE header block: emit `push` once with the
+            // promised request headers.
             emitEvent("push", stream.id, stream.responseHeaders);
         }
         maybeResolveResponse(stream);

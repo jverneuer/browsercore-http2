@@ -156,6 +156,86 @@ describe("literal header fields (RFC 7541 §6.2)", () => {
     });
 });
 
+describe("encoder static-table indexing (RFC 7541 §6.1, §6.2)", () => {
+    it("emits an indexed representation for an exact static-table match", () => {
+        const enc = new HpackEncoder();
+        // :method GET = static table index 2 -> 0x80 | 2 = 0x82, nothing else.
+        const bytes = enc.encode([{ name: ":method", value: "GET", indexing: false }]);
+        expect(Array.from(bytes)).toEqual([0x82]);
+    });
+
+    it("emits an indexed representation for another exact static-table match (:path /)", () => {
+        const enc = new HpackEncoder();
+        // :path / = static index 4 -> 0x80 | 4 = 0x84.
+        const bytes = enc.encode([{ name: ":path", value: "/", indexing: false }]);
+        expect(Array.from(bytes)).toEqual([0x84]);
+    });
+
+    it("emits a literal referencing a static name index when only the name matches", () => {
+        const enc = new HpackEncoder();
+        // :method CUSTOM: name matches index 2, value is new. Incremental literal
+        // (01xxxxxx) -> first octet 0x40 | 2 = 0x42, no name string, then value.
+        const bytes = enc.encode([{ name: ":method", value: "CUSTOM", indexing: true }]);
+        expect(bytes[0]).toBe(0x42);
+        const decoded = new HpackDecoder().decode(bytes);
+        expect(decoded[0]).toMatchObject({ name: ":method", value: "CUSTOM" });
+    });
+
+    it("emits a no-indexing literal referencing a name index when indexing is false", () => {
+        const enc = new HpackEncoder();
+        // :authority example.com: name matches index 1, value is new. No-indexing
+        // literal (0000xxxx) -> first octet 0x00 | 1 = 0x01.
+        const bytes = enc.encode([{ name: ":authority", value: "example.com", indexing: false }]);
+        expect(bytes[0]).toBe(0x01);
+        const decoded = new HpackDecoder().decode(bytes);
+        expect(decoded[0]).toMatchObject({ name: ":authority", value: "example.com" });
+    });
+
+    it("emits a never-indexed literal for a sensitive field (overrides indexing)", () => {
+        const enc = new HpackEncoder();
+        // sensitive forces never-indexed (0001xxxx). With a new name the first
+        // octet is 0x10 (name index 0); the field is never added to the table.
+        const bytes = enc.encode([
+            { name: "x-secret", value: "top", indexing: true, sensitive: true },
+        ]);
+        expect(bytes[0]).toBe(0x10);
+        const decoded = new HpackDecoder().decode(bytes);
+        expect(decoded[0]).toMatchObject({ name: "x-secret", value: "top" });
+        // Never-indexed -> not referenceable from the dynamic table.
+        expect(() => new HpackDecoder().decode(new Uint8Array([0x80 | 62]))).toThrow(HpackError);
+    });
+
+    it("emits a never-indexed literal referencing a static name index for a sensitive field", () => {
+        const enc = new HpackEncoder();
+        // :authority with a value, marked sensitive: the name still resolves to
+        // static index 1, so the first octet is 0x10 | 1 = 0x11 and no name
+        // string follows.
+        const bytes = enc.encode([
+            { name: ":authority", value: "secret.example", indexing: true, sensitive: true },
+        ]);
+        expect(bytes[0]).toBe(0x11);
+        const decoded = new HpackDecoder().decode(bytes);
+        expect(decoded[0]).toMatchObject({ name: ":authority", value: "secret.example" });
+    });
+
+    it("still round-trips a mix of indexed, name-indexed and new-name fields", () => {
+        const enc = new HpackEncoder();
+        const block: HeaderBlock = [
+            { name: ":method", value: "GET", indexing: false }, // indexed
+            { name: ":path", value: "/", indexing: false }, // indexed
+            { name: ":authority", value: "example.com", indexing: false }, // name-indexed
+            { name: "x-custom", value: "v", indexing: false }, // new name
+        ];
+        const decoded = new HpackDecoder().decode(enc.encode(block));
+        expect(decoded.map((f) => [f.name, f.value])).toEqual([
+            [":method", "GET"],
+            [":path", "/"],
+            [":authority", "example.com"],
+            ["x-custom", "v"],
+        ]);
+    });
+});
+
 describe("dynamic table size update (RFC 7541 §6.3)", () => {
     it("shrinks the table via a size update, evicting existing entries", () => {
         const dec = new HpackDecoder();

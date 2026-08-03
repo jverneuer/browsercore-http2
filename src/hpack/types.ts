@@ -11,6 +11,12 @@ export interface HeaderField {
     readonly value: string;
     /** Whether this field may be added to the dynamic table. */
     readonly indexing: boolean;
+    /**
+     * If true, emit a never-indexed literal (RFC 7541 §6.2.3) so the value is
+     * never inserted into the dynamic table — for sensitive values (e.g.
+     * credentials). Takes precedence over {@link indexing}.
+     */
+    readonly sensitive?: boolean;
 }
 
 /** A header block — ordered list of fields as they appear on the wire. */

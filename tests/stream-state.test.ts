@@ -224,15 +224,15 @@ describe("unknown-stream guards (no throw, no frames)", () => {
 });
 
 describe("rejectStream with no resolver", () => {
-    it("RST on a stream with no registered resolver sets closed and returns early", () => {
+    it("RST on a stream with no registered resolver finalizes and removes the stream", () => {
         const cap = new FrameCapture();
         const mgr = createStreamManager(cap.sendFrame.bind(cap));
         const stream = mgr.openStream();
         // No expectResponse() call — stream.reject is undefined.
 
-        let closedFired = false;
-        mgr.on("streamClosed", () => {
-            closedFired = true;
+        let closedId: number | undefined;
+        mgr.on("streamClosed", (id: number) => {
+            closedId = id;
         });
 
         mgr.dispatch({
@@ -242,11 +242,20 @@ describe("rejectStream with no resolver", () => {
             errorCode: 0x5,
         });
 
-        // handleRstStream sets the closed state directly...
+        // handleRstStream sets the closed state, and rejectStream now finalizes
+        // even without a resolver — so streamClosed fires with the stream id.
         expect(stream.state.state).toBe("closed");
-        // ...but rejectStream returns early when no resolver is registered, so
-        // finalizeStream is skipped and streamClosed is NOT emitted.
-        expect(closedFired).toBe(false);
+        expect(closedId).toBe(stream.id);
+
+        // The stream was removed from the table: a subsequent DATA frame on its
+        // id is treated as unknown, so no WINDOW_UPDATE is emitted.
+        mgr.dispatch({
+            type: FrameType.DATA,
+            flags: 0,
+            streamId: stream.id,
+            payload: text.encode("x"),
+        });
+        expect(cap.count(FrameType.WINDOW_UPDATE)).toBe(0);
     });
 });
 
@@ -478,7 +487,7 @@ describe("server-push response resolution", () => {
         expect(pushed!.statusCode).toBe(200);
     });
 
-    it("emits `push` for a push stream whose headers arrive via CONTINUATION", () => {
+    it("emits `push` once on the promised stream when PUSH_PROMISE headers arrive via CONTINUATION (client-stream id)", () => {
         const cap = new FrameCapture();
         const mgr = createStreamManager(cap.sendFrame.bind(cap));
         const client = mgr.openStream();
@@ -486,13 +495,17 @@ describe("server-push response resolution", () => {
         const block = encodeHeaders(new Map([["x-push", "v"]]));
         const mid = Math.floor(block.length / 2) || 1;
 
+        let pushCount = 0;
         let pushStreamId: number | undefined;
-        mgr.once("push", (id: number) => {
+        let pushHeaders: Map<string, string> | undefined;
+        mgr.on("push", (id: number, headers: Map<string, string>) => {
+            pushCount++;
             pushStreamId = id;
+            pushHeaders = headers;
         });
 
-        // PUSH_PROMISE without END_HEADERS pushes the first fragment onto the
-        // promised stream (2).
+        // PUSH_PROMISE without END_HEADERS — first fragment onto the promised
+        // stream (2); the manager records client-stream → promised mapping.
         mgr.dispatch({
             type: FrameType.PUSH_PROMISE,
             flags: 0x0,
@@ -502,21 +515,20 @@ describe("server-push response resolution", () => {
             promisedStreamId: ID(2),
             payload: block.subarray(0, mid),
         });
-        // NOTE: handleContinuation looks up `frame.streamId` to find the stream
-        // whose header block is being reassembled. For PUSH_PROMISE that is the
-        // *promised* stream, so the CONTINUATION must carry the promised id here
-        // for the bytes to assemble. (Per RFC 7540 §6.10 a CONTINUATION after
-        // PUSH_PROMISE carries the client-stream id; see the bug note in the
-        // report — this implementation does not track the in-progress block.)
+        // Per RFC 7540 §6.10 the CONTINUATION after PUSH_PROMISE carries the
+        // *client*-stream id (not the promised id). The manager must reassemble
+        // the block on the promised stream and emit `push` exactly once.
         mgr.dispatch({
             type: FrameType.CONTINUATION,
             flags: 0x4,
-            streamId: ID(2),
+            streamId: client.id,
             endHeaders: true,
             payload: block.subarray(mid),
         });
 
+        expect(pushCount).toBe(1);
         expect(pushStreamId).toBe(2);
+        expect(pushHeaders?.get("x-push")).toBe("v");
     });
 });
 
