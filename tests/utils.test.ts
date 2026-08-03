@@ -1,13 +1,13 @@
 /**
- * utils.ts coverage: assertNever + createStreamId.
+ * utils.ts coverage: assertNever.
  *
- * These were previously uncovered (0% functions). assertNever is the
- * exhaustiveness guard thrown from the `default` branch of discriminated-union
- * switches; createStreamId mints the odd 31-bit client stream id.
+ * assertNever is the exhaustiveness guard thrown from the `default` branch of
+ * discriminated-union switches. (createStreamId was refactored into the stream
+ * manager's internal nextStreamId counter — see stream-manager.test.ts.)
  */
 
 import { describe, expect, it } from "vitest";
-import { assertNever, createStreamId } from "../src/utils.js";
+import { assertNever } from "../src/utils.js";
 
 describe("assertNever", () => {
     it("throws an Error describing the unexpected value", () => {
@@ -24,16 +24,5 @@ describe("assertNever", () => {
             caught = err;
         }
         expect(String(caught)).toContain('{"kind":"mystery"}');
-    });
-});
-
-describe("createStreamId", () => {
-    it("returns an odd, positive, 31-bit id", () => {
-        for (let i = 0; i < 32; i++) {
-            const id = createStreamId();
-            expect(id % 2).toBe(1); // client streams are odd
-            expect(id).toBeGreaterThan(0);
-            expect(id).toBeLessThanOrEqual(0x7fffffff); // top bit reserved
-        }
     });
 });
