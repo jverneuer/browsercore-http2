@@ -18,7 +18,7 @@ export class Http2Error extends Error {
 }
 
 /** The peer sent a GOAWAY — the connection is going down. */
-export class GoawayReceivedError extends Error {
+export class GoawayReceivedError extends Http2Error {
     public readonly kind = "GoawayReceivedError" as const;
     public readonly lastStreamId: number;
     public readonly errorCode: number;
@@ -41,7 +41,7 @@ export class GoawayReceivedError extends Error {
 }
 
 /** The peer reset a specific stream with RST_STREAM. */
-export class RstStreamError extends Error {
+export class RstStreamError extends Http2Error {
     public readonly kind = "RstStreamError" as const;
     public readonly streamId: number;
     public readonly errorCode: number;
@@ -57,7 +57,7 @@ export class RstStreamError extends Error {
 }
 
 /** A flow-control window was violated (send exceeded the peer's window). */
-export class FlowControlError extends Error {
+export class FlowControlError extends Http2Error {
     public readonly kind = "FlowControlError" as const;
     public readonly streamId: number | undefined;
     public readonly windowSize: number;
@@ -82,7 +82,7 @@ export class FlowControlError extends Error {
 }
 
 /** A frame could not be parsed from the wire. */
-export class FrameParseError extends Error {
+export class FrameParseError extends Http2Error {
     public readonly kind = "FrameParseError" as const;
     public readonly offset: number;
     public override readonly cause: Error | undefined;
@@ -96,7 +96,7 @@ export class FrameParseError extends Error {
 }
 
 /** The peer acknowledged our SETTINGS frame never arrived within the timeout. */
-export class SettingsAckTimeoutError extends Error {
+export class SettingsAckTimeoutError extends Http2Error {
     public readonly kind = "SettingsAckTimeoutError" as const;
     public readonly timeoutMs: number;
     public override readonly cause: Error | undefined;
