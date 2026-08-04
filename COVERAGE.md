@@ -1,15 +1,15 @@
 # Coverage report
 
-Generated from `coverage-summary.json` by `scripts/coverage-md.mjs`.
+Generated from `coverage-summary.json` by `coverage-md` (@browsercore/dev).
 
 ## Total
 
 | Metric | Coverage |
 | --- | --- |
-| Statements | 97.39% (824/846) |
-| Branches | 90.05% (308/342) |
-| Functions | 97.05% (132/136) |
-| Lines | 97.37% (816/838) |
+| Statements | 97.99% (829/846) |
+| Branches | 90.35% (309/342) |
+| Functions | 99.26% (135/136) |
+| Lines | 97.97% (821/838) |
 
 ## Per-file
 
@@ -19,17 +19,17 @@ Generated from `coverage-summary.json` by `scripts/coverage-md.mjs`.
 | `src/errors.ts` | 100% (34/34) | 100% (2/2) | 100% (6/6) | 100% (34/34) |
 | `src/frame/frame.ts` | 98.83% (85/86) | 90% (27/30) | 100% (6/6) | 98.82% (84/85) |
 | `src/hpack/decoder.ts` | 96.07% (49/51) | 91.3% (21/23) | 100% (4/4) | 96.07% (49/51) |
-| `src/hpack/dynamic-table.ts` | 86.66% (26/30) | 86.66% (13/15) | 66.66% (6/9) | 86.66% (26/30) |
+| `src/hpack/dynamic-table.ts` | 93.33% (28/30) | 86.66% (13/15) | 88.88% (8/9) | 93.33% (28/30) |
 | `src/hpack/encoder.ts` | 96.55% (56/58) | 89.79% (44/49) | 100% (16/16) | 96.29% (52/54) |
 | `src/hpack/error.ts` | 100% (4/4) | 100% (0/0) | 100% (1/1) | 100% (4/4) |
 | `src/hpack/helpers.ts` | 100% (10/10) | 100% (0/0) | 100% (3/3) | 100% (9/9) |
 | `src/hpack/hpack.ts` | 100% (0/0) | 100% (0/0) | 100% (0/0) | 100% (0/0) |
 | `src/hpack/huffman-table.ts` | 100% (1/1) | 100% (0/0) | 100% (0/0) | 100% (1/1) |
-| `src/hpack/integer.ts` | 91.89% (34/37) | 87.5% (14/16) | 100% (2/2) | 91.89% (34/37) |
+| `src/hpack/integer.ts` | 97.29% (36/37) | 93.75% (15/16) | 100% (2/2) | 97.29% (36/37) |
 | `src/hpack/static-table.ts` | 100% (3/3) | 100% (0/0) | 100% (0/0) | 100% (3/3) |
 | `src/hpack/string.ts` | 94.31% (83/88) | 86.11% (31/36) | 100% (7/7) | 94.25% (82/87) |
 | `src/hpack/types.ts` | 100% (0/0) | 100% (0/0) | 100% (0/0) | 100% (0/0) |
 | `src/index.ts` | 100% (0/0) | 100% (0/0) | 100% (0/0) | 100% (0/0) |
 | `src/stream/stream.ts` | 99.01% (301/304) | 92.62% (113/122) | 100% (50/50) | 99% (300/303) |
 | `src/types.ts` | 100% (2/2) | 100% (0/0) | 100% (0/0) | 100% (2/2) |
-| `src/utils.ts` | 50% (1/2) | 100% (0/0) | 50% (1/2) | 50% (1/2) |
+| `src/utils.ts` | 100% (2/2) | 100% (0/0) | 100% (2/2) | 100% (2/2) |
