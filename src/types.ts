@@ -7,6 +7,9 @@
 
 import type { Transport } from "@browsercore/transport";
 
+/** Branded HTTP/2 connection identifier (opaque correlation id). */
+export type Http2ConnectionId = string & { __brand: "Http2ConnectionId" };
+
 /** Branded HTTP/2 stream identifier (must be a 31-bit unsigned integer). */
 export type Http2StreamId = number & { __brand: "Http2StreamId" };
 
@@ -160,7 +163,7 @@ export interface FlowControlWindow {
 /** Public contract for an HTTP/2 connection. */
 export interface Http2Connection {
     /** Opaque identifier for logging / correlation. */
-    readonly id: string;
+    readonly id: Http2ConnectionId;
     /** Current locally-applied settings (after the peer's SETTINGS ACK). */
     readonly settings: Http2SettingsMap;
 

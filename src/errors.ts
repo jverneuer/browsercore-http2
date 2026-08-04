@@ -5,6 +5,8 @@
  * can match on `kind` instead of parsing messages.
  */
 
+import type { Http2StreamId } from "./types.js";
+
 /** Discriminator union for all HTTP/2 error kinds. */
 export type Http2ErrorKind =
     | "Http2Error"
@@ -12,7 +14,9 @@ export type Http2ErrorKind =
     | "RstStreamError"
     | "FlowControlError"
     | "FrameParseError"
-    | "SettingsAckTimeoutError";
+    | "SettingsAckTimeoutError"
+    | "ConnectionClosedError"
+    | "StreamClosedError";
 
 /** Base class for all HTTP/2 errors. */
 export class Http2Error extends Error {
@@ -114,6 +118,39 @@ export class SettingsAckTimeoutError extends Http2Error {
         super(`SETTINGS ACK not received within ${timeoutMs}ms`);
         this.name = "SettingsAckTimeoutError";
         this.timeoutMs = timeoutMs;
+        this.cause = options?.cause;
+    }
+}
+
+/**
+ * The connection is closed (or closing) and cannot accept new work.
+ * Raised by `request()` / `ping()` when the connection has been shut down.
+ */
+export class ConnectionClosedError extends Http2Error {
+    public override readonly kind = "ConnectionClosedError" as const;
+    public override readonly cause: Error | undefined;
+
+    constructor(options?: { cause?: Error }) {
+        super("connection is closed");
+        this.name = "ConnectionClosedError";
+        this.cause = options?.cause;
+    }
+}
+
+/**
+ * A stream is closed (or closing) and cannot accept further frames.
+ * Raised when the local side attempts to write to or expects a response from
+ * a stream that has already been torn down.
+ */
+export class StreamClosedError extends Http2Error {
+    public override readonly kind = "StreamClosedError" as const;
+    public readonly streamId: Http2StreamId;
+    public override readonly cause: Error | undefined;
+
+    constructor(streamId: Http2StreamId, options?: { cause?: Error }) {
+        super(`stream ${streamId} is closed`);
+        this.name = "StreamClosedError";
+        this.streamId = streamId;
         this.cause = options?.cause;
     }
 }
