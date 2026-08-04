@@ -39,6 +39,8 @@ export type { Http2Stream, StreamManager } from "./stream/stream.js";
 export {
     FrameType,
     Http2Settings,
+    silentLogger,
+    devLogger,
     type BaseFrame,
     type ContinuationFrame,
     type DataFrame,
@@ -53,6 +55,7 @@ export {
     type Http2SettingsKey,
     type Http2SettingsMap,
     type Http2StreamId,
+    type Logger,
     type PingFrame,
     type PriorityFrame,
     type PushPromiseFrame,

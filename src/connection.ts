@@ -31,6 +31,7 @@
 import type { EventEmitter } from "node:events";
 import { crypto } from "@browsercore/crypto";
 import {
+    silentLogger,
     FrameType,
     type Frame,
     type Http2Connection,
@@ -39,6 +40,7 @@ import {
     type Http2Response,
     type Http2SettingsMap,
     type Http2StreamId,
+    type Logger,
 } from "./types.js";
 import { parseFrame, parseFrameHeader, serializeFrame, FRAME_HEADER_LENGTH } from "./frame/frame.js";
 import { encodeHeaders } from "./hpack/hpack.js";
@@ -72,6 +74,8 @@ export class Http2ConnectionImpl implements Http2Connection {
     /** Serializes + writes a frame to the transport. */
     private readonly sendFrame: (frame: Frame) => void;
 
+    /** Logging sink (defaults to silentLogger). Injected via Http2Options. */
+    private readonly logger: Logger;
     /** Set once the connection begins graceful shutdown (GOAWAY sent/received). */
     private closing = false;
     /** Set once the connection is fully torn down. */
@@ -94,6 +98,10 @@ export class Http2ConnectionImpl implements Http2Connection {
         this.transport = options.transport;
         this.manager = manager;
         this.sendFrame = sendFrame;
+        // The logger defaults to silent so library consumers see no output unless
+        // they opt in. Assigned here so both the no-arg and full-options paths
+        // share the same default.
+        this.logger = options.logger ?? silentLogger;
     }
 
     // --- public Http2Connection surface ----------------------------------------
@@ -175,6 +183,7 @@ export class Http2ConnectionImpl implements Http2Connection {
             return;
         }
         this.closing = true;
+        this.logger.debug("closing connection", { id: this.id });
         // Graceful shutdown: GOAWAY(lastStreamId=0) then close the transport.
         // Ignore errors here — the transport may already be gone.
         try {
@@ -278,6 +287,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         if (this.closed) {
             return;
         }
+        this.logger.error("connection fatal error", { id: this.id, error: err.message });
         this.closing = true;
         this.manager.abortAll(err);
         this.activeClientStreams.clear();
@@ -296,6 +306,12 @@ export class Http2ConnectionImpl implements Http2Connection {
         //   - "goaway": stop accepting new work.
         //   - "streamClosed": free a concurrency slot.
         this.manager.on("goaway", (lastStreamId: Http2StreamId, errorCode: number, debugData: Bytes) => {
+            this.logger.warn("peer sent GOAWAY", {
+                id: this.id,
+                lastStreamId: String(lastStreamId),
+                errorCode,
+                debugDataBytes: debugData.length,
+            });
             this.receivedGoaway = { lastStreamId, errorCode, debugData };
             this.closing = true;
         });
@@ -361,6 +377,10 @@ export class Http2ConnectionImpl implements Http2Connection {
         } catch (err) {
             // transport.read() rejected: socket closed / error.
             if (!this.closed) {
+                this.logger.warn("transport read failed", {
+                    id: this.id,
+                    error: err instanceof Error ? err.message : String(err),
+                });
                 this.handleFatal(err instanceof Error ? err : new Error(String(err)));
             }
         }
@@ -371,6 +391,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         return new Promise<void>((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.manager.off("settingsAck", onAck);
+                this.logger.error("SETTINGS ACK timeout", { id: this.id, timeoutMs });
                 reject(new SettingsAckTimeoutError(timeoutMs));
                 this.handleFatal(new SettingsAckTimeoutError(timeoutMs));
             }, timeoutMs);
@@ -378,6 +399,7 @@ export class Http2ConnectionImpl implements Http2Connection {
             const onAck = (): void => {
                 clearTimeout(timer);
                 this.manager.off("settingsAck", onAck);
+                this.logger.debug("SETTINGS handshake complete", { id: this.id, settings: this.settings });
                 resolve();
             };
             this.manager.once("settingsAck", onAck);
