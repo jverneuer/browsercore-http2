@@ -42,7 +42,7 @@ import type {
 } from "../types.js";
 import { decodeHeaders } from "../hpack/hpack.js";
 import { DEFAULT_MAX_FRAME_SIZE } from "../frame/frame.js";
-import { GoawayReceivedError, RstStreamError } from "../errors.js";
+import { GoawayReceivedError, RstStreamError, StreamClosedError } from "../errors.js";
 import { assertNever } from "../utils.js";
 
 /** A single HTTP/2 stream — state + flow-control windows. */
@@ -288,8 +288,12 @@ function handlePriority(): void {
 function pushHeaderBytes(stream: ManagedStream, payload: Bytes): void {
     for (let i = 0; i < payload.length; i++) {
         const octet = payload[i];
+        // Under noUncheckedIndexedAccess, the type system cannot prove that an
+        // in-bounds index yields a defined value. In practice `i < payload.length`
+        // guarantees the octet is defined — if the impossible happens, the
+        // header block is corrupt and the stream must be torn down.
         if (octet === undefined) {
-            throw new RangeError(`header byte decode: buffer underflow at index ${i}`);
+            throw new StreamClosedError(stream.id);
         }
         stream.pendingHeaderBytes.push(octet);
     }

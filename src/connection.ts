@@ -34,6 +34,7 @@ import {
     FrameType,
     type Frame,
     type Http2Connection,
+    type Http2ConnectionId,
     type Http2Options,
     type Http2Request,
     type Http2Response,
@@ -42,7 +43,11 @@ import {
 } from "./types.js";
 import { parseFrame, parseFrameHeader, serializeFrame, FRAME_HEADER_LENGTH } from "./frame/frame.js";
 import { encodeHeaders } from "./hpack/hpack.js";
-import { SettingsAckTimeoutError, GoawayReceivedError } from "./errors.js";
+import {
+    SettingsAckTimeoutError,
+    GoawayReceivedError,
+    ConnectionClosedError,
+} from "./errors.js";
 import { createStreamManager, type StreamManager } from "./stream/stream.js";
 
 /** The fixed client connection preface string (RFC 7540 §3.5). */
@@ -62,7 +67,7 @@ type Bytes = Uint8Array;
  * `Http2Connection` interface; internal state is kept on the instance.
  */
 export class Http2ConnectionImpl implements Http2Connection {
-    public readonly id: string;
+    public readonly id: Http2ConnectionId;
     public settings: Http2SettingsMap;
 
     /** The underlying byte-stream transport. */
@@ -84,7 +89,7 @@ export class Http2ConnectionImpl implements Http2Connection {
     private readonly slotWaiters: Array<() => void> = [];
 
     public constructor(
-        id: string,
+        id: Http2ConnectionId,
         options: Http2Options,
         manager: StreamManager & EventEmitter,
         sendFrame: (frame: Frame) => void,
@@ -148,7 +153,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         const data = opaqueData ?? randomUint64();
         return new Promise<bigint>((resolve, reject) => {
             if (this.closed) {
-                reject(new Error("connection is closed"));
+                reject(new ConnectionClosedError());
                 return;
             }
             // Resolve only on the ACK that echoes *our* opaque data. Late or
@@ -190,7 +195,7 @@ export class Http2ConnectionImpl implements Http2Connection {
             // best-effort
         }
         // Reject anything still in flight, then drop the transport.
-        this.manager.abortAll(new Error("connection closed"));
+        this.manager.abortAll(new ConnectionClosedError());
         this.activeClientStreams.clear();
         this.drainSlotWaiters();
         this.closed = true;
@@ -264,12 +269,12 @@ export class Http2ConnectionImpl implements Http2Connection {
     /**
      * The error to raise for a request that cannot proceed because the
      * connection is closing. If the peer sent a GOAWAY, surface that as a
-     * `GoawayReceivedError`; otherwise a generic "connection is closing".
+     * `GoawayReceivedError`; otherwise a `ConnectionClosedError`.
      */
-    private closingError(): Error {
+    private closingError(): GoawayReceivedError | ConnectionClosedError {
         const goaway = this.receivedGoaway;
         return goaway === undefined
-            ? new Error("connection is closing")
+            ? new ConnectionClosedError()
             : new GoawayReceivedError(goaway.lastStreamId, goaway.errorCode, goaway.debugData);
     }
 
@@ -417,7 +422,7 @@ function randomUint64(): bigint {
  * frame) and waits for the peer's SETTINGS ACK.
  */
 export async function connectHttp2(options: Http2Options): Promise<Http2Connection> {
-    const id = `http2_${Date.now().toString(36)}`;
+    const id = `http2_${Date.now().toString(36)}` as Http2ConnectionId;
     const timeoutMs = options.settingsAckTimeoutMs ?? DEFAULT_SETTINGS_ACK_TIMEOUT_MS;
 
     // Single frame-sending callback shared by the manager and the connection.

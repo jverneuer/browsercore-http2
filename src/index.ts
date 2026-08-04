@@ -8,12 +8,14 @@
 export { connectHttp2, Http2ConnectionImpl } from "./connection.js";
 
 export {
+    ConnectionClosedError,
     FlowControlError,
     FrameParseError,
     GoawayReceivedError,
     Http2Error,
     RstStreamError,
     SettingsAckTimeoutError,
+    StreamClosedError,
 } from "./errors.js";
 
 export {
@@ -47,6 +49,7 @@ export {
     type GoawayFrame,
     type HeadersFrame,
     type Http2Connection,
+    type Http2ConnectionId,
     type Http2Options,
     type Http2Request,
     type Http2Response,

@@ -23,9 +23,11 @@ import { createFakeTransportPair, FakeTransport } from "./fake-transport.js";
 import { serializeFrame, parseFrame, parseFrameHeader, FRAME_HEADER_LENGTH } from "../src/frame/frame.js";
 import type { Frame, Http2Request, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
-import { GoawayReceivedError, SettingsAckTimeoutError } from "../src/errors.js";
+import { ConnectionClosedError, GoawayReceivedError, SettingsAckTimeoutError } from "../src/errors.js";
+import type { Http2ConnectionId } from "../src/types.js";
 
 const ID = (n: number): Http2StreamId => n as Http2StreamId;
+const CONN_ID = "unit" as Http2ConnectionId;
 const text = new TextEncoder();
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
@@ -74,7 +76,7 @@ function makeConn(): {
         frames.push(f);
     };
     const manager = createStreamManager(sendFrame);
-    const conn = new Http2ConnectionImpl("unit", { transport }, manager, sendFrame);
+    const conn = new Http2ConnectionImpl(CONN_ID, { transport }, manager, sendFrame);
     return { conn, transport, frames, manager };
 }
 
@@ -89,16 +91,16 @@ describe("request/ping rejected on a closing or closed connection", () => {
         await conn.close();
     });
 
-    it("request rejects with a generic error after a locally-initiated goaway", async () => {
+    it("request rejects with a ConnectionClosedError after a locally-initiated goaway", async () => {
         const { conn } = makeConn();
         await conn.goaway(ID(0), 0); // closing=true, but no receivedGoaway
-        await expect(conn.request(sampleReq)).rejects.toThrow("connection is closing");
+        await expect(conn.request(sampleReq)).rejects.toBeInstanceOf(ConnectionClosedError);
     });
 
-    it("request rejects after close()", async () => {
+    it("request rejects with a ConnectionClosedError after close()", async () => {
         const { conn } = makeConn();
         await conn.close();
-        await expect(conn.request(sampleReq)).rejects.toThrow("connection is closing");
+        await expect(conn.request(sampleReq)).rejects.toBeInstanceOf(ConnectionClosedError);
     });
 
     it("ping rejects when the connection is closed", async () => {
@@ -125,7 +127,7 @@ describe("close() behavior", () => {
         const sendFrame = (f: Frame): void => {
             if (f.type === FrameType.GOAWAY) throw new Error("write broken");
         };
-        const conn = new Http2ConnectionImpl("unit", { transport }, manager, sendFrame);
+        const conn = new Http2ConnectionImpl(CONN_ID, { transport }, manager, sendFrame);
         // Must not reject despite the GOAWAY send throwing.
         await expect(conn.close()).resolves.toBeUndefined();
         expect(transport.state.state).toBe("closed");
@@ -238,7 +240,7 @@ describe("concurrency slot pool (MAX_CONCURRENT_STREAMS backpressure)", () => {
 
         // Closing drains the waiters; req2 resumes, sees `closed`, and rejects.
         await conn.close();
-        await expect(r2).rejects.toThrow("connection is closing");
+        await expect(r2).rejects.toBeInstanceOf(ConnectionClosedError);
         await r1; // aborted — no unhandled rejection
     });
 });
@@ -494,7 +496,7 @@ describe("slot release on stream completion", () => {
             frames.push(f);
         };
         const manager = createStreamManager(sendFrame);
-        const conn = new Http2ConnectionImpl("unit", { transport }, manager, sendFrame);
+        const conn = new Http2ConnectionImpl(CONN_ID, { transport }, manager, sendFrame);
         manager.dispatch({
             type: FrameType.SETTINGS,
             flags: 0,
@@ -551,7 +553,7 @@ describe("read-loop frame reassembly across fragmented reads", () => {
             frames.push(f);
         };
         const manager = createStreamManager(sendFrame);
-        const conn = new Http2ConnectionImpl("unit", { transport: client }, manager, sendFrame);
+        const conn = new Http2ConnectionImpl(CONN_ID, { transport: client }, manager, sendFrame);
         conn.startReadLoop(); // readLoop now blocked on transport.read()
 
         // A SETTINGS frame advertising MAX_CONCURRENT_STREAMS=7 (6-byte payload).
