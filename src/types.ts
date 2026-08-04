@@ -6,6 +6,7 @@
  */
 
 import type { Transport } from "@browsercore/transport";
+import type { CryptoProvider } from "@browsercore/crypto";
 
 /** Branded HTTP/2 stream identifier (must be a 31-bit unsigned integer). */
 export type Http2StreamId = number & { __brand: "Http2StreamId" };
@@ -207,4 +208,9 @@ export interface Http2Options {
     readonly maxConcurrentStreams?: number;
     /** Timeout for receiving the peer's SETTINGS ACK. Default 5000ms. */
     readonly settingsAckTimeoutMs?: number;
+    /**
+     * Crypto provider for non-protocol randomness (e.g. PING opaque data).
+     * Defaults to the `@browsercore/crypto` singleton when omitted.
+     */
+    readonly crypto?: CryptoProvider;
 }

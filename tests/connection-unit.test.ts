@@ -17,6 +17,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { crypto } from "@browsercore/crypto";
 import { Http2ConnectionImpl, connectHttp2 } from "../src/connection.js";
 import { createStreamManager } from "../src/stream/stream.js";
 import { createFakeTransportPair, FakeTransport } from "./fake-transport.js";
@@ -74,7 +75,7 @@ function makeConn(): {
         frames.push(f);
     };
     const manager = createStreamManager(sendFrame);
-    const conn = new Http2ConnectionImpl("unit", { transport }, manager, sendFrame);
+    const conn = new Http2ConnectionImpl("unit", { transport }, manager, sendFrame, crypto);
     return { conn, transport, frames, manager };
 }
 
@@ -125,7 +126,7 @@ describe("close() behavior", () => {
         const sendFrame = (f: Frame): void => {
             if (f.type === FrameType.GOAWAY) throw new Error("write broken");
         };
-        const conn = new Http2ConnectionImpl("unit", { transport }, manager, sendFrame);
+        const conn = new Http2ConnectionImpl("unit", { transport }, manager, sendFrame, crypto);
         // Must not reject despite the GOAWAY send throwing.
         await expect(conn.close()).resolves.toBeUndefined();
         expect(transport.state.state).toBe("closed");
@@ -494,7 +495,7 @@ describe("slot release on stream completion", () => {
             frames.push(f);
         };
         const manager = createStreamManager(sendFrame);
-        const conn = new Http2ConnectionImpl("unit", { transport }, manager, sendFrame);
+        const conn = new Http2ConnectionImpl("unit", { transport }, manager, sendFrame, crypto);
         manager.dispatch({
             type: FrameType.SETTINGS,
             flags: 0,
@@ -551,7 +552,7 @@ describe("read-loop frame reassembly across fragmented reads", () => {
             frames.push(f);
         };
         const manager = createStreamManager(sendFrame);
-        const conn = new Http2ConnectionImpl("unit", { transport: client }, manager, sendFrame);
+        const conn = new Http2ConnectionImpl("unit", { transport: client }, manager, sendFrame, crypto);
         conn.startReadLoop(); // readLoop now blocked on transport.read()
 
         // A SETTINGS frame advertising MAX_CONCURRENT_STREAMS=7 (6-byte payload).
