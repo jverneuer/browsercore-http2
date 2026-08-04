@@ -6,6 +6,7 @@
  */
 
 import type { Transport } from "@browsercore/transport";
+import type { CryptoProvider } from "@browsercore/crypto";
 
 /** Branded HTTP/2 connection identifier (opaque correlation id). */
 export type Http2ConnectionId = string & { __brand: "Http2ConnectionId" };
@@ -292,4 +293,9 @@ export interface Http2Options {
      * deterministic clock in tests.
      */
     readonly clock?: Clock;
+    /**
+     * Crypto provider for non-protocol randomness (e.g. PING opaque data).
+     * Defaults to the `@browsercore/crypto` singleton when omitted.
+     */
+    readonly crypto?: CryptoProvider;
 }

@@ -29,7 +29,7 @@
  */
 
 import type { EventEmitter } from "node:events";
-import { crypto } from "@browsercore/crypto";
+import { crypto, type CryptoProvider } from "@browsercore/crypto";
 import {
     silentLogger,
     FrameType,
@@ -78,6 +78,8 @@ export class Http2ConnectionImpl implements Http2Connection {
     private readonly transport: Http2Options["transport"];
     /** Clock for timeouts + id generation (defaults to systemClock). */
     private readonly clock: Clock;
+    /** Crypto provider for non-protocol randomness (e.g. PING opaque data). */
+    private readonly provider: CryptoProvider;
     /** Stream manager (also an EventEmitter for connection-level signals). */
     private readonly manager: StreamManager & EventEmitter;
     /** Serializes + writes a frame to the transport. */
@@ -101,6 +103,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         options: Http2Options,
         manager: StreamManager & EventEmitter,
         sendFrame: (frame: Frame) => void,
+        provider: CryptoProvider,
     ) {
         this.id = id;
         this.settings = options.initialSettings ?? {};
@@ -108,6 +111,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         this.transport = options.transport;
         this.manager = manager;
         this.sendFrame = sendFrame;
+        this.provider = provider;
         // The logger defaults to silent so library consumers see no output unless
         // they opt in. Assigned here so both the no-arg and full-options paths
         // share the same default.
@@ -163,7 +167,7 @@ export class Http2ConnectionImpl implements Http2Connection {
     }
 
     public ping(opaqueData?: bigint): Promise<bigint> {
-        const data = opaqueData ?? randomUint64();
+        const data = opaqueData ?? randomUint64(this.provider);
         return new Promise<bigint>((resolve, reject) => {
             if (this.closed) {
                 reject(new ConnectionClosedError());
@@ -430,8 +434,8 @@ function concat(a: Bytes, b: Bytes): Bytes {
 }
 
 /** A random 64-bit opaque value for PING frames. */
-function randomUint64(): bigint {
-    const bytes = crypto.randomBytes(8);
+function randomUint64(provider: CryptoProvider): bigint {
+    const bytes = provider.randomBytes(8);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const hi = BigInt(view.getUint32(0));
     const lo = BigInt(view.getUint32(4));
@@ -452,6 +456,7 @@ export async function connectHttp2(options: Http2Options): Promise<Http2Connecti
     const clock = options.clock ?? systemClock;
     const id = `http2_${clock.now().toString(36)}` as Http2ConnectionId;
     const timeoutMs = options.settingsAckTimeoutMs ?? DEFAULT_SETTINGS_ACK_TIMEOUT_MS;
+    const provider = options.crypto ?? crypto;
 
     // Single frame-sending callback shared by the manager and the connection.
     const sendFrame = (frame: Frame): void => {
@@ -463,7 +468,7 @@ export async function connectHttp2(options: Http2Options): Promise<Http2Connecti
     };
 
     const manager = createStreamManager(sendFrame);
-    const conn = new Http2ConnectionImpl(id, options, manager, sendFrame);
+    const conn = new Http2ConnectionImpl(id, options, manager, sendFrame, provider);
 
     // Write the client connection preface (RFC 7540 §3.5):
     //   PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n  +  SETTINGS frame.
