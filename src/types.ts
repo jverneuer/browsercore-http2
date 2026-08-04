@@ -197,6 +197,36 @@ export interface Http2Response {
     readonly body: Uint8Array;
 }
 
+// ---------------------------------------------------------------------------
+// Clock abstraction (injected — decouples protocol code from the platform clock)
+// ---------------------------------------------------------------------------
+
+/**
+ * Time + timer abstraction for HTTP/2 internals. Injected via {@link Http2Options}
+ * so callers control the clock — keeps the package testable (deterministic,
+ * virtualizable timeouts) and decouples protocol logic from the platform
+ * `Date.now()` / `setTimeout`.
+ *
+ * The default ({@link systemClock}) delegates to the platform globals, so
+ * behavior is identical unless the caller opts in. All three methods map
+ * directly onto the globals they replace.
+ */
+export interface Clock {
+    /** Current epoch milliseconds — replaces `Date.now()`. */
+    now(): number;
+    /** Schedule a one-shot timer — replaces `setTimeout`. */
+    setTimeout(callback: () => void, ms: number): ReturnType<typeof setTimeout>;
+    /** Cancel a pending timer — replaces `clearTimeout`. */
+    clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+}
+
+/** The default, platform-backed clock. Delegates to `Date.now()` / `setTimeout`. */
+export const systemClock: Clock = {
+    now: () => Date.now(),
+    setTimeout: (callback, ms) => setTimeout(callback, ms),
+    clearTimeout: (timer) => clearTimeout(timer),
+};
+
 /** Options for {@link connectHttp2}. */
 export interface Http2Options {
     /** The underlying byte-stream transport (already connected). */
@@ -207,4 +237,10 @@ export interface Http2Options {
     readonly maxConcurrentStreams?: number;
     /** Timeout for receiving the peer's SETTINGS ACK. Default 5000ms. */
     readonly settingsAckTimeoutMs?: number;
+    /**
+     * Clock for protocol timeouts + id generation. Defaults to
+     * {@link systemClock} — the platform `Date.now()` / `setTimeout`. Inject a
+     * deterministic clock in tests.
+     */
+    readonly clock?: Clock;
 }

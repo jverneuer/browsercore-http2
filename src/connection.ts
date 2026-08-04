@@ -32,6 +32,8 @@ import type { EventEmitter } from "node:events";
 import { crypto } from "@browsercore/crypto";
 import {
     FrameType,
+    systemClock,
+    type Clock,
     type Frame,
     type Http2Connection,
     type Http2Options,
@@ -67,6 +69,8 @@ export class Http2ConnectionImpl implements Http2Connection {
 
     /** The underlying byte-stream transport. */
     private readonly transport: Http2Options["transport"];
+    /** Clock for timeouts + id generation (defaults to systemClock). */
+    private readonly clock: Clock;
     /** Stream manager (also an EventEmitter for connection-level signals). */
     private readonly manager: StreamManager & EventEmitter;
     /** Serializes + writes a frame to the transport. */
@@ -91,6 +95,7 @@ export class Http2ConnectionImpl implements Http2Connection {
     ) {
         this.id = id;
         this.settings = options.initialSettings ?? {};
+        this.clock = options.clock ?? systemClock;
         this.transport = options.transport;
         this.manager = manager;
         this.sendFrame = sendFrame;
@@ -369,14 +374,14 @@ export class Http2ConnectionImpl implements Http2Connection {
     /** Resolve once the SETTINGS ACK arrives, or reject after the timeout. */
     public waitForSettingsAck(timeoutMs: number): Promise<void> {
         return new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(() => {
+            const timer = this.clock.setTimeout(() => {
                 this.manager.off("settingsAck", onAck);
                 reject(new SettingsAckTimeoutError(timeoutMs));
                 this.handleFatal(new SettingsAckTimeoutError(timeoutMs));
             }, timeoutMs);
 
             const onAck = (): void => {
-                clearTimeout(timer);
+                this.clock.clearTimeout(timer);
                 this.manager.off("settingsAck", onAck);
                 resolve();
             };
@@ -417,7 +422,8 @@ function randomUint64(): bigint {
  * frame) and waits for the peer's SETTINGS ACK.
  */
 export async function connectHttp2(options: Http2Options): Promise<Http2Connection> {
-    const id = `http2_${Date.now().toString(36)}`;
+    const clock = options.clock ?? systemClock;
+    const id = `http2_${clock.now().toString(36)}`;
     const timeoutMs = options.settingsAckTimeoutMs ?? DEFAULT_SETTINGS_ACK_TIMEOUT_MS;
 
     // Single frame-sending callback shared by the manager and the connection.
