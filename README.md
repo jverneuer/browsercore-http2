@@ -69,3 +69,19 @@ await conn.close();
 ```
 
 No other `@browsercore/*` packages are imported.
+
+## Position in BrowserCore
+
+```
+Application
+      │
+   @browsercore/http2
+      │
+   @browsercore/tls
+      │
+@browsercore/transport
+      │
+     TCP
+```
+
+Every higher networking layer communicates with the network exclusively through the layers below it.
