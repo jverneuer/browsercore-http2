@@ -43,7 +43,9 @@ export {
     Http2Settings,
     silentLogger,
     devLogger,
+    systemClock,
     type BaseFrame,
+    type Clock,
     type ContinuationFrame,
     type DataFrame,
     type FlowControlWindow,
@@ -69,4 +71,4 @@ export {
     type WindowUpdateFrame,
 } from "./types.js";
 
-export { assertNever } from "./utils.js";
+export { assertNever, createId } from "./utils.js";
