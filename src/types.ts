@@ -236,9 +236,9 @@ export const silentLogger: Logger = {
  * noise.
  */
 export const devLogger: Logger = {
-    debug: (message, ...meta) => { /* dev logger: console disabled per coding standards */ },
-    warn: (message, ...meta) => { /* dev logger: console disabled per coding standards */ },
-    error: (message, ...meta) => { /* dev logger: console disabled per coding standards */ },
+    debug: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
+    warn: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
+    error: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
 };
 
 // ---------------------------------------------------------------------------
