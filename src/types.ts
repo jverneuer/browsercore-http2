@@ -236,9 +236,9 @@ export const silentLogger: Logger = {
  * noise.
  */
 export const devLogger: Logger = {
-    debug: (message, ...meta) => console.debug(message, ...meta),
-    warn: (message, ...meta) => console.warn(message, ...meta),
-    error: (message, ...meta) => console.error(message, ...meta),
+    debug: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
+    warn: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
+    error: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
 };
 
 // ---------------------------------------------------------------------------
@@ -268,7 +268,7 @@ export interface Clock {
 export const systemClock: Clock = {
     now: () => Date.now(),
     setTimeout: (callback, ms) => setTimeout(callback, ms),
-    clearTimeout: (timer) => clearTimeout(timer),
+    clearTimeout: (timer) => { clearTimeout(timer); },
 };
 
 /** Options for {@link connectHttp2}. */
