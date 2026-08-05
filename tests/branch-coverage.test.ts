@@ -526,6 +526,77 @@ describe("connection.ts branches — closingError / handleFatal", () => {
 });
 
 // ---------------------------------------------------------------------------
+// connection.ts — readLoop fatal error paths (non-Error throws / rejections)
+// ---------------------------------------------------------------------------
+
+describe("connection.ts branches — readLoop wraps non-Error values in Error", () => {
+    it("readLoop wraps a non-Error dispatch rejection in an Error", async () => {
+        // Covers the `err instanceof Error ? err : new Error(String(err))` right
+        // branch (line 386): the manager's dispatch throws a non-Error value.
+        const { client, server } = createFakeTransportPair();
+        const manager = createStreamManager(() => undefined);
+        (manager as { dispatch: (frame: Frame) => void }).dispatch = () => {
+            throw "boom";
+        };
+        const conn = new Http2ConnectionImpl(
+            CONN_ID,
+            { transport: client },
+            manager,
+            () => undefined,
+            crypto,
+        );
+        conn.startReadLoop();
+        // Feed a SETTINGS frame; the readLoop dispatches it and hits the throw.
+        await server.write(
+            serializeFrame({
+                type: FrameType.SETTINGS,
+                flags: 0,
+                streamId: ID(0),
+                ack: false,
+                settings: {},
+            }),
+        );
+        // Let the readLoop process the frame and tear down.
+        await new Promise((r) => setTimeout(r, 20));
+        await conn.close().catch(() => undefined);
+        await server.close().catch(() => undefined);
+    });
+
+    it("readLoop wraps a non-Error transport rejection in an Error", async () => {
+        // Covers both `err instanceof Error ? ... : ...` right branches (lines 395,
+        // 396): transport.read() rejects with a non-Error value.
+        const transport = new FakeTransport("c");
+        (transport as unknown as { read: () => Promise<Uint8Array> }).read = () =>
+            Promise.reject("connection reset by peer");
+        const manager = createStreamManager(() => undefined);
+        const conn = new Http2ConnectionImpl(
+            CONN_ID,
+            { transport },
+            manager,
+            () => undefined,
+            crypto,
+        );
+        conn.startReadLoop();
+        // Let the readLoop hit the read() rejection and tear down.
+        await new Promise((r) => setTimeout(r, 20));
+        await conn.close().catch(() => undefined);
+    });
+
+    it("handleFatal early-returns when the connection is already closed", async () => {
+        // Covers the `if (this.closed) return;` true branch (line 301): the
+        // SETTINGS ACK timeout fires after the connection has been closed, so
+        // handleFatal runs but bails out immediately.
+        const { conn } = makeConn();
+        await conn.close();
+        // The SETTINGS ACK timer is independent of the connection lifecycle; once
+        // it fires, handleFatal runs but early-returns because closed=true.
+        const timedOut = conn.waitForSettingsAck(20).catch(() => undefined);
+        await new Promise((r) => setTimeout(r, 50));
+        await timedOut;
+    });
+});
+
+// ---------------------------------------------------------------------------
 // stream/stream.ts — padded DATA edge cases + WINDOW_UPDATE branches
 // ---------------------------------------------------------------------------
 
