@@ -2,6 +2,8 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
   pull_request:
     branches: [main]
 jobs:
@@ -20,10 +22,6 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Enforce minimum coverage threshold
-        run: |
-          T=$(grep -oP 'p<\K[0-9]+' .github/workflows/ci.yml | head -1)
-          [ "$T" -ge 94 ] || { echo "Threshold $T < 94"; exit 1; }
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -41,9 +39,19 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint -- --deny-warnings
       - run: npm test -- --coverage
-      - name: Enforce >=94% line coverage
+      - name: Enforce >=94% coverage (statements, branches, functions, lines)
         run: |
-          node -e "const t=require('./coverage/coverage-summary.json').total;const p=t.lines.pct;if(p<94){console.error('Line coverage '+p+'% < 94% threshold');process.exit(1)}console.log('Line coverage '+p+'% >= 94% OK')"
+          node -e "
+          const t = require('./coverage/coverage-summary.json').total;
+          const min = 94;
+          const failed = [['statements',t.statements.pct],['branches',t.branches.pct],['functions',t.functions.pct],['lines',t.lines.pct]].filter(([,p])=>p<min);
+          if (failed.length) {
+            console.error('Coverage below '+min+'% threshold:');
+            for (const [k,p] of failed) console.error('  '+k+' '+p+'% < '+min+'%');
+            process.exit(1);
+          }
+          console.log('Coverage OK — statements '+t.statements.pct+'%, branches '+t.branches.pct+'%, functions '+t.functions.pct+'%, lines '+t.lines.pct+'% >= '+min+'%');
+          "
       - name: Generate COVERAGE.md
         run: npx coverage-md
       - run: npm run build
