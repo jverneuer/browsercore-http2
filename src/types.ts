@@ -268,7 +268,7 @@ export interface Clock {
 export const systemClock: Clock = {
     now: () => Date.now(),
     setTimeout: (callback, ms) => setTimeout(callback, ms),
-    clearTimeout: (timer) => clearTimeout(timer),
+    clearTimeout: (timer) => { clearTimeout(timer); },
 };
 
 /** Options for {@link connectHttp2}. */
