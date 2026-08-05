@@ -2,7 +2,7 @@
 
 
 [![npm version](https://img.shields.io/npm/v/@browsercore/http2)](https://www.npmjs.com/package/@browsercore/http2)
-[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jverneuer/browsercore-http2/coverage/coverage/badge.json)](https://github.com/jverneuer/browsercore-http2/blob/main/COVERAGE.md)
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jverneuer/browsercore-http2/main/.github/coverage-badge.json)](https://github.com/jverneuer/browsercore-http2/blob/main/COVERAGE.md)
 [![lint](https://img.shields.io/github/actions/workflow/status/jverneuer/browsercore-http2/ci.yml?label=lint)](https://github.com/jverneuer/browsercore-http2/actions/workflows/ci.yml)
 
 HTTP/2 framing over any duplex byte stream.
