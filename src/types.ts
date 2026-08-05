@@ -6,6 +6,10 @@
  */
 
 import type { Transport } from "@browsercore/transport";
+import type { CryptoProvider } from "@browsercore/crypto";
+
+/** Branded HTTP/2 connection identifier (opaque correlation id). */
+export type Http2ConnectionId = string & { __brand: "Http2ConnectionId" };
 
 /** Branded HTTP/2 stream identifier (must be a 31-bit unsigned integer). */
 export type Http2StreamId = number & { __brand: "Http2StreamId" };
@@ -160,7 +164,7 @@ export interface FlowControlWindow {
 /** Public contract for an HTTP/2 connection. */
 export interface Http2Connection {
     /** Opaque identifier for logging / correlation. */
-    readonly id: string;
+    readonly id: Http2ConnectionId;
     /** Current locally-applied settings (after the peer's SETTINGS ACK). */
     readonly settings: Http2SettingsMap;
 
@@ -197,6 +201,76 @@ export interface Http2Response {
     readonly body: Uint8Array;
 }
 
+// ---------------------------------------------------------------------------
+// Logger abstraction (injected — decouples protocol code from `console`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Logging abstraction for HTTP/2 internals. Injected via {@link Http2Options}
+ * so callers control sink + verbosity without the protocol layer depending on
+ * `console` directly — keeps the package testable and embeddable in non-Node
+ * hosts (browsers, workers) where `console` may not be the desired sink.
+ *
+ * All methods are synchronous and MUST NOT throw — logging failures must never
+ * disrupt protocol operation.
+ */
+export interface Logger {
+    /** Verbose diagnostics — disabled by default in production. */
+    debug(message: string, ...meta: readonly unknown[]): void;
+    /** Recoverable anomaly (e.g. peer SETTINGS violation we tolerated). */
+    warn(message: string, ...meta: readonly unknown[]): void;
+    /** Non-recoverable failure (e.g. GOAWAY received, handshake timeout). */
+    error(message: string, ...meta: readonly unknown[]): void;
+}
+
+/** A silent logger — drops every call. This is the default. */
+export const silentLogger: Logger = {
+    debug: () => {},
+    warn: () => {},
+    error: () => {},
+};
+
+/**
+ * A development logger — forwards to the platform `console`. Opt-in; the
+ * default is {@link silentLogger} so production callers must explicitly enable
+ * noise.
+ */
+export const devLogger: Logger = {
+    debug: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
+    warn: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
+    error: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
+};
+
+// ---------------------------------------------------------------------------
+// Clock abstraction (injected — decouples protocol code from the platform clock)
+// ---------------------------------------------------------------------------
+
+/**
+ * Time + timer abstraction for HTTP/2 internals. Injected via {@link Http2Options}
+ * so callers control the clock — keeps the package testable (deterministic,
+ * virtualizable timeouts) and decouples protocol logic from the platform
+ * `Date.now()` / `setTimeout`.
+ *
+ * The default ({@link systemClock}) delegates to the platform globals, so
+ * behavior is identical unless the caller opts in. All three methods map
+ * directly onto the globals they replace.
+ */
+export interface Clock {
+    /** Current epoch milliseconds — replaces `Date.now()`. */
+    now(): number;
+    /** Schedule a one-shot timer — replaces `setTimeout`. */
+    setTimeout(callback: () => void, ms: number): ReturnType<typeof setTimeout>;
+    /** Cancel a pending timer — replaces `clearTimeout`. */
+    clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+}
+
+/** The default, platform-backed clock. Delegates to `Date.now()` / `setTimeout`. */
+export const systemClock: Clock = {
+    now: () => Date.now(),
+    setTimeout: (callback, ms) => setTimeout(callback, ms),
+    clearTimeout: (timer) => { clearTimeout(timer); },
+};
+
 /** Options for {@link connectHttp2}. */
 export interface Http2Options {
     /** The underlying byte-stream transport (already connected). */
@@ -207,4 +281,21 @@ export interface Http2Options {
     readonly maxConcurrentStreams?: number;
     /** Timeout for receiving the peer's SETTINGS ACK. Default 5000ms. */
     readonly settingsAckTimeoutMs?: number;
+    /**
+     * Logger for protocol diagnostics. Defaults to {@link silentLogger} — no
+     * output unless the caller opts in. Use {@link devLogger} to forward to
+     * `console`.
+     */
+    readonly logger?: Logger;
+    /**
+     * Clock for protocol timeouts + id generation. Defaults to
+     * {@link systemClock} — the platform `Date.now()` / `setTimeout`. Inject a
+     * deterministic clock in tests.
+     */
+    readonly clock?: Clock;
+    /**
+     * Crypto provider for non-protocol randomness (e.g. PING opaque data).
+     * Defaults to the `@browsercore/crypto` singleton when omitted.
+     */
+    readonly crypto?: CryptoProvider;
 }

@@ -8,12 +8,14 @@
 export { connectHttp2, Http2ConnectionImpl } from "./connection.js";
 
 export {
+    ConnectionClosedError,
     FlowControlError,
     FrameParseError,
     GoawayReceivedError,
     Http2Error,
     RstStreamError,
     SettingsAckTimeoutError,
+    StreamClosedError,
 } from "./errors.js";
 
 export {
@@ -39,7 +41,11 @@ export type { Http2Stream, StreamManager } from "./stream/stream.js";
 export {
     FrameType,
     Http2Settings,
+    silentLogger,
+    devLogger,
+    systemClock,
     type BaseFrame,
+    type Clock,
     type ContinuationFrame,
     type DataFrame,
     type FlowControlWindow,
@@ -47,12 +53,14 @@ export {
     type GoawayFrame,
     type HeadersFrame,
     type Http2Connection,
+    type Http2ConnectionId,
     type Http2Options,
     type Http2Request,
     type Http2Response,
     type Http2SettingsKey,
     type Http2SettingsMap,
     type Http2StreamId,
+    type Logger,
     type PingFrame,
     type PriorityFrame,
     type PushPromiseFrame,
@@ -63,4 +71,4 @@ export {
     type WindowUpdateFrame,
 } from "./types.js";
 
-export { assertNever } from "./utils.js";
+export { assertNever, createId } from "./utils.js";

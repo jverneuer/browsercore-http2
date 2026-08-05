@@ -38,6 +38,7 @@
         "test": "vitest run"
     },
     "devDependencies": {
+        "@browsercore/crypto": "0.2.0",
         "@browsercore/dev": "latest",
         "@types/node": "^26.1.2",
         "@vitest/coverage-v8": "^4.1.10",
@@ -47,7 +48,6 @@
         "oxlint-tsgolint": "7.0.2001"
     },
     "dependencies": {
-        "@browsercore/crypto": "0.2.0",
         "@browsercore/transport": "0.2.0"
     },
     "engines": {

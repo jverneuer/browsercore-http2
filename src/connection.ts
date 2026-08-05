@@ -29,20 +29,29 @@
  */
 
 import type { EventEmitter } from "node:events";
-import { crypto } from "@browsercore/crypto";
+import { crypto, type CryptoProvider } from "@browsercore/crypto";
 import {
+    silentLogger,
     FrameType,
+    systemClock,
+    type Clock,
     type Frame,
     type Http2Connection,
+    type Http2ConnectionId,
     type Http2Options,
     type Http2Request,
     type Http2Response,
     type Http2SettingsMap,
     type Http2StreamId,
+    type Logger,
 } from "./types.js";
 import { parseFrame, parseFrameHeader, serializeFrame, FRAME_HEADER_LENGTH } from "./frame/frame.js";
 import { encodeHeaders } from "./hpack/hpack.js";
-import { SettingsAckTimeoutError, GoawayReceivedError } from "./errors.js";
+import {
+    SettingsAckTimeoutError,
+    GoawayReceivedError,
+    ConnectionClosedError,
+} from "./errors.js";
 import { createStreamManager, type StreamManager } from "./stream/stream.js";
 
 /** The fixed client connection preface string (RFC 7540 §3.5). */
@@ -62,16 +71,22 @@ type Bytes = Uint8Array;
  * `Http2Connection` interface; internal state is kept on the instance.
  */
 export class Http2ConnectionImpl implements Http2Connection {
-    public readonly id: string;
+    public readonly id: Http2ConnectionId;
     public settings: Http2SettingsMap;
 
     /** The underlying byte-stream transport. */
     private readonly transport: Http2Options["transport"];
+    /** Clock for timeouts + id generation (defaults to systemClock). */
+    private readonly clock: Clock;
+    /** Crypto provider for non-protocol randomness (e.g. PING opaque data). */
+    private readonly provider: CryptoProvider;
     /** Stream manager (also an EventEmitter for connection-level signals). */
     private readonly manager: StreamManager & EventEmitter;
     /** Serializes + writes a frame to the transport. */
     private readonly sendFrame: (frame: Frame) => void;
 
+    /** Logging sink (defaults to silentLogger). Injected via Http2Options. */
+    private readonly logger: Logger;
     /** Set once the connection begins graceful shutdown (GOAWAY sent/received). */
     private closing = false;
     /** Set once the connection is fully torn down. */
@@ -84,16 +99,23 @@ export class Http2ConnectionImpl implements Http2Connection {
     private readonly slotWaiters: Array<() => void> = [];
 
     public constructor(
-        id: string,
+        id: Http2ConnectionId,
         options: Http2Options,
         manager: StreamManager & EventEmitter,
         sendFrame: (frame: Frame) => void,
+        provider: CryptoProvider,
     ) {
         this.id = id;
         this.settings = options.initialSettings ?? {};
+        this.clock = options.clock ?? systemClock;
         this.transport = options.transport;
         this.manager = manager;
         this.sendFrame = sendFrame;
+        this.provider = provider;
+        // The logger defaults to silent so library consumers see no output unless
+        // they opt in. Assigned here so both the no-arg and full-options paths
+        // share the same default.
+        this.logger = options.logger ?? silentLogger;
     }
 
     // --- public Http2Connection surface ----------------------------------------
@@ -145,10 +167,10 @@ export class Http2ConnectionImpl implements Http2Connection {
     }
 
     public ping(opaqueData?: bigint): Promise<bigint> {
-        const data = opaqueData ?? randomUint64();
+        const data = opaqueData ?? randomUint64(this.provider);
         return new Promise<bigint>((resolve, reject) => {
             if (this.closed) {
-                reject(new Error("connection is closed"));
+                reject(new ConnectionClosedError());
                 return;
             }
             // Resolve only on the ACK that echoes *our* opaque data. Late or
@@ -175,6 +197,7 @@ export class Http2ConnectionImpl implements Http2Connection {
             return;
         }
         this.closing = true;
+        this.logger.debug("closing connection", { id: this.id });
         // Graceful shutdown: GOAWAY(lastStreamId=0) then close the transport.
         // Ignore errors here — the transport may already be gone.
         try {
@@ -190,7 +213,7 @@ export class Http2ConnectionImpl implements Http2Connection {
             // best-effort
         }
         // Reject anything still in flight, then drop the transport.
-        this.manager.abortAll(new Error("connection closed"));
+        this.manager.abortAll(new ConnectionClosedError());
         this.activeClientStreams.clear();
         this.drainSlotWaiters();
         this.closed = true;
@@ -264,12 +287,12 @@ export class Http2ConnectionImpl implements Http2Connection {
     /**
      * The error to raise for a request that cannot proceed because the
      * connection is closing. If the peer sent a GOAWAY, surface that as a
-     * `GoawayReceivedError`; otherwise a generic "connection is closing".
+     * `GoawayReceivedError`; otherwise a `ConnectionClosedError`.
      */
-    private closingError(): Error {
+    private closingError(): GoawayReceivedError | ConnectionClosedError {
         const goaway = this.receivedGoaway;
         return goaway === undefined
-            ? new Error("connection is closing")
+            ? new ConnectionClosedError()
             : new GoawayReceivedError(goaway.lastStreamId, goaway.errorCode, goaway.debugData);
     }
 
@@ -278,6 +301,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         if (this.closed) {
             return;
         }
+        this.logger.error("connection fatal error", { id: this.id, error: err.message });
         this.closing = true;
         this.manager.abortAll(err);
         this.activeClientStreams.clear();
@@ -296,6 +320,12 @@ export class Http2ConnectionImpl implements Http2Connection {
         //   - "goaway": stop accepting new work.
         //   - "streamClosed": free a concurrency slot.
         this.manager.on("goaway", (lastStreamId: Http2StreamId, errorCode: number, debugData: Bytes) => {
+            this.logger.warn("peer sent GOAWAY", {
+                id: this.id,
+                lastStreamId: String(lastStreamId),
+                errorCode,
+                debugDataBytes: debugData.length,
+            });
             this.receivedGoaway = { lastStreamId, errorCode, debugData };
             this.closing = true;
         });
@@ -361,6 +391,10 @@ export class Http2ConnectionImpl implements Http2Connection {
         } catch (err) {
             // transport.read() rejected: socket closed / error.
             if (!this.closed) {
+                this.logger.warn("transport read failed", {
+                    id: this.id,
+                    error: err instanceof Error ? err.message : String(err),
+                });
                 this.handleFatal(err instanceof Error ? err : new Error(String(err)));
             }
         }
@@ -369,15 +403,17 @@ export class Http2ConnectionImpl implements Http2Connection {
     /** Resolve once the SETTINGS ACK arrives, or reject after the timeout. */
     public waitForSettingsAck(timeoutMs: number): Promise<void> {
         return new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(() => {
+            const timer = this.clock.setTimeout(() => {
                 this.manager.off("settingsAck", onAck);
+                this.logger.error("SETTINGS ACK timeout", { id: this.id, timeoutMs });
                 reject(new SettingsAckTimeoutError(timeoutMs));
                 this.handleFatal(new SettingsAckTimeoutError(timeoutMs));
             }, timeoutMs);
 
             const onAck = (): void => {
-                clearTimeout(timer);
+                this.clock.clearTimeout(timer);
                 this.manager.off("settingsAck", onAck);
+                this.logger.debug("SETTINGS handshake complete", { id: this.id, settings: this.settings });
                 resolve();
             };
             this.manager.once("settingsAck", onAck);
@@ -398,8 +434,8 @@ function concat(a: Bytes, b: Bytes): Bytes {
 }
 
 /** A random 64-bit opaque value for PING frames. */
-function randomUint64(): bigint {
-    const bytes = crypto.randomBytes(8);
+function randomUint64(provider: CryptoProvider): bigint {
+    const bytes = provider.randomBytes(8);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const hi = BigInt(view.getUint32(0));
     const lo = BigInt(view.getUint32(4));
@@ -417,8 +453,10 @@ function randomUint64(): bigint {
  * frame) and waits for the peer's SETTINGS ACK.
  */
 export async function connectHttp2(options: Http2Options): Promise<Http2Connection> {
-    const id = `http2_${Date.now().toString(36)}`;
+    const clock = options.clock ?? systemClock;
+    const id = `http2_${clock.now().toString(36)}` as Http2ConnectionId;
     const timeoutMs = options.settingsAckTimeoutMs ?? DEFAULT_SETTINGS_ACK_TIMEOUT_MS;
+    const provider = options.crypto ?? crypto;
 
     // Single frame-sending callback shared by the manager and the connection.
     const sendFrame = (frame: Frame): void => {
@@ -430,7 +468,7 @@ export async function connectHttp2(options: Http2Options): Promise<Http2Connecti
     };
 
     const manager = createStreamManager(sendFrame);
-    const conn = new Http2ConnectionImpl(id, options, manager, sendFrame);
+    const conn = new Http2ConnectionImpl(id, options, manager, sendFrame, provider);
 
     // Write the client connection preface (RFC 7540 §3.5):
     //   PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n  +  SETTINGS frame.
