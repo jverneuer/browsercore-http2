@@ -202,46 +202,6 @@ export interface Http2Response {
 }
 
 // ---------------------------------------------------------------------------
-// Logger abstraction (injected — decouples protocol code from `console`)
-// ---------------------------------------------------------------------------
-
-/**
- * Logging abstraction for HTTP/2 internals. Injected via {@link Http2Options}
- * so callers control sink + verbosity without the protocol layer depending on
- * `console` directly — keeps the package testable and embeddable in non-Node
- * hosts (browsers, workers) where `console` may not be the desired sink.
- *
- * All methods are synchronous and MUST NOT throw — logging failures must never
- * disrupt protocol operation.
- */
-export interface Logger {
-    /** Verbose diagnostics — disabled by default in production. */
-    debug(message: string, ...meta: readonly unknown[]): void;
-    /** Recoverable anomaly (e.g. peer SETTINGS violation we tolerated). */
-    warn(message: string, ...meta: readonly unknown[]): void;
-    /** Non-recoverable failure (e.g. GOAWAY received, handshake timeout). */
-    error(message: string, ...meta: readonly unknown[]): void;
-}
-
-/** A silent logger — drops every call. This is the default. */
-export const silentLogger: Logger = {
-    debug: () => {},
-    warn: () => {},
-    error: () => {},
-};
-
-/**
- * A development logger — forwards to the platform `console`. Opt-in; the
- * default is {@link silentLogger} so production callers must explicitly enable
- * noise.
- */
-export const devLogger: Logger = {
-    debug: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
-    warn: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
-    error: (_message, ..._meta) => { /* dev logger: console disabled per coding standards */ },
-};
-
-// ---------------------------------------------------------------------------
 // Clock abstraction (injected — decouples protocol code from the platform clock)
 // ---------------------------------------------------------------------------
 
@@ -281,12 +241,6 @@ export interface Http2Options {
     readonly maxConcurrentStreams?: number;
     /** Timeout for receiving the peer's SETTINGS ACK. Default 5000ms. */
     readonly settingsAckTimeoutMs?: number;
-    /**
-     * Logger for protocol diagnostics. Defaults to {@link silentLogger} — no
-     * output unless the caller opts in. Use {@link devLogger} to forward to
-     * `console`.
-     */
-    readonly logger?: Logger;
     /**
      * Clock for protocol timeouts + id generation. Defaults to
      * {@link systemClock} — the platform `Date.now()` / `setTimeout`. Inject a
