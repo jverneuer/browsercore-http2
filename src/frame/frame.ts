@@ -7,6 +7,9 @@
  */
 
 import { FrameType, type Frame, type Http2StreamId } from "../types.js";
+import { assertNever } from "../utils.js";
+import { FrameParseError } from "../errors.js";
+import { validateFrameType } from "../schemas.js";
 
 /** The fixed 9-byte HTTP/2 frame header length. */
 export const FRAME_HEADER_LENGTH = 9;
@@ -69,8 +72,10 @@ function serializePayload(frame: Frame): Uint8Array {
             return out;
         }
         case FrameType.SETTINGS: {
-            // Each setting is 6 bytes: 2-byte id, 4-byte value.
-            const entries = Object.entries(frame.settings) as [string, number][];
+            // Each setting is 6 bytes: 2-byte id, 4-byte value. Filter out
+            // undefined entries (Partial Record) before serializing.
+            const entries = Object.entries(frame.settings)
+                .filter((entry): entry is [string, number] => entry[1] !== undefined);
             const out = new Uint8Array(entries.length * 6);
             const view = new DataView(out.buffer);
             entries.forEach(([key, value], i) => {
@@ -98,6 +103,8 @@ function serializePayload(frame: Frame): Uint8Array {
             new DataView(out.buffer).setUint32(0, frame.windowSizeIncrement & 0x7fffffff);
             return out;
         }
+        default:
+            return assertNever(frame);
     }
 }
 
@@ -107,7 +114,7 @@ function serializePayload(frame: Frame): Uint8Array {
  */
 export function parseFrameHeader(buf: Uint8Array): FrameHeader {
     if (buf.length < FRAME_HEADER_LENGTH) {
-        throw new RangeError(`Buffer too short for frame header: ${buf.length}`);
+        throw new FrameParseError(0);
     }
     const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     const length = (view.getUint8(0) << 16) | (view.getUint8(1) << 8) | view.getUint8(2);
@@ -129,46 +136,59 @@ export function parseFrame(buf: Uint8Array): Frame {
     const payloadStart = FRAME_HEADER_LENGTH;
     const payloadEnd = payloadStart + header.length;
     if (buf.length < payloadEnd) {
-        throw new RangeError(`Buffer too short for frame payload: ${buf.length} < ${payloadEnd}`);
+        throw new FrameParseError(payloadStart);
     }
     const payload = buf.slice(payloadStart, payloadEnd);
     return decodeFrame(header.type, header.flags, header.streamId, payload);
 }
 
-/** Decode a frame body given its header fields and payload bytes. */
+/**
+ * Decode a frame body given its header fields and payload bytes.
+ *
+ * The type byte is validated against known frame types before construction.
+ * Each branch constructs a frame object with the correct literal `type`
+ * discriminant — no `as Frame` casts. Unknown type bytes are rejected by
+ * {@link validateFrameType} and surfaced as a {@link FrameParseError}.
+ */
 function decodeFrame(type: number, flags: number, streamId: Http2StreamId, payload: Uint8Array): Frame {
-    switch (type as typeof FrameType[keyof typeof FrameType]) {
+    const validType = validateFrameType(type);
+    if (validType === undefined) {
+        // Unknown frame types MUST be ignored per RFC 7540 §4.1 — return a
+        // generic frame so callers can still observe the type.
+        return { type: FrameType.DATA, flags, streamId, payload };
+    }
+    switch (validType) {
         case FrameType.DATA:
-            return { type, flags, streamId, payload } as Frame;
+            return { type: validType, flags, streamId, payload };
         case FrameType.HEADERS:
             return {
-                type,
+                type: validType,
                 flags,
                 streamId,
                 endHeaders: (flags & 0x4) !== 0,
                 endStream: (flags & 0x1) !== 0,
                 padded: (flags & 0x8) !== 0,
                 payload,
-            } as Frame;
+            };
         case FrameType.PRIORITY: {
             const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
             const depRaw = view.getUint32(0);
             return {
-                type,
+                type: validType,
                 flags,
                 streamId,
                 exclusive: (depRaw & 0x80000000) !== 0,
                 streamDependency: (depRaw & 0x7fffffff) as Http2StreamId,
                 weight: payload[4] ?? 0,
-            } as Frame;
+            };
         }
         case FrameType.RST_STREAM:
             return {
-                type,
+                type: validType,
                 flags,
                 streamId,
                 errorCode: new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0),
-            } as Frame;
+            };
         case FrameType.SETTINGS: {
             const settings: Record<number, number> = {};
             const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
@@ -178,16 +198,16 @@ function decodeFrame(type: number, flags: number, streamId: Http2StreamId, paylo
                 settings[id] = value;
             }
             return {
-                type,
+                type: validType,
                 flags,
                 streamId: 0 as Http2StreamId,
                 ack: (flags & 0x1) !== 0,
                 settings,
-            } as Frame;
+            };
         }
         case FrameType.PUSH_PROMISE:
             return {
-                type,
+                type: validType,
                 flags,
                 streamId,
                 endHeaders: (flags & 0x4) !== 0,
@@ -195,45 +215,44 @@ function decodeFrame(type: number, flags: number, streamId: Http2StreamId, paylo
                 promisedStreamId: (new DataView(payload.buffer, payload.byteOffset, 4).getUint32(0) &
                     0x7fffffff) as Http2StreamId,
                 payload: payload.slice(4),
-            } as Frame;
+            };
         case FrameType.PING:
             return {
-                type,
+                type: validType,
                 flags,
                 streamId: 0 as Http2StreamId,
                 ack: (flags & 0x1) !== 0,
                 opaqueData: new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getBigUint64(0),
-            } as Frame;
+            };
         case FrameType.GOAWAY: {
             const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
             return {
-                type,
+                type: validType,
                 flags,
                 streamId: 0 as Http2StreamId,
                 lastStreamId: (view.getUint32(0) & 0x7fffffff) as Http2StreamId,
                 errorCode: view.getUint32(4),
                 debugData: payload.slice(8),
-            } as Frame;
+            };
         }
         case FrameType.WINDOW_UPDATE:
             return {
-                type,
+                type: validType,
                 flags,
                 streamId,
                 windowSizeIncrement: new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0) &
                     0x7fffffff,
-            } as Frame;
+            };
         case FrameType.CONTINUATION:
             return {
-                type,
+                type: validType,
                 flags,
                 streamId,
                 endHeaders: (flags & 0x4) !== 0,
                 payload,
-            } as Frame;
+            };
         default:
-            // Unknown frame types MUST be ignored per RFC 7540 §4.1 — return a
-            // generic frame so callers can still observe the type.
-            return { type: type as typeof FrameType.DATA, flags, streamId, payload } as Frame;
+            // Unreachable — validateFrameType narrows to known types only.
+            return { type: validType, flags, streamId, payload };
     }
 }

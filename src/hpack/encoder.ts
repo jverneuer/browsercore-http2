@@ -18,6 +18,7 @@ import type { HeaderField } from "./types.js";
 import { STATIC_TABLE } from "./static-table.js";
 import { encodeStringHuffman, normalizeName } from "./string.js";
 import { encodeInteger } from "./integer.js";
+import { assertNever } from "../utils.js";
 
 /** Header-field representations emitted by the encoder (§6). */
 type EncodedHeader =
@@ -126,6 +127,8 @@ export class HpackEncoder {
                 return this.emitLiteralNeverIndexed(header.nameIndex, header.name, header.value);
             case "literal_no_indexing":
                 return this.emitLiteralNoIndexing(header.nameIndex, header.name, header.value);
+            default:
+                return assertNever(header);
         }
     }
 
