@@ -18,15 +18,13 @@ import type { HeaderField } from "./types.js";
 import { STATIC_TABLE } from "./static-table.js";
 import { encodeStringHuffman, normalizeName } from "./string.js";
 import { encodeInteger } from "./integer.js";
-import { assertNever } from "../utils.js";
 
 /** Header-field representations emitted by the encoder (§6). */
 type EncodedHeader =
     | { readonly kind: "indexed"; readonly index: number }
     | { readonly kind: "literal_incremental"; readonly nameIndex: number; readonly name: string | undefined; readonly value: string }
     | { readonly kind: "literal_never_indexed"; readonly nameIndex: number; readonly name: string | undefined; readonly value: string }
-    | { readonly kind: "literal_no_indexing"; readonly nameIndex: number; readonly name: string | undefined; readonly value: string }
-    | { readonly kind: "size_update"; readonly newLimit: number };
+    | { readonly kind: "literal_no_indexing"; readonly nameIndex: number; readonly name: string | undefined; readonly value: string };
 
 /**
  * Find the static-table index (1-based) of an exact name+value match, or
@@ -128,10 +126,6 @@ export class HpackEncoder {
                 return this.emitLiteralNeverIndexed(header.nameIndex, header.name, header.value);
             case "literal_no_indexing":
                 return this.emitLiteralNoIndexing(header.nameIndex, header.name, header.value);
-            case "size_update":
-                return this.encodeSizeUpdate(header.newLimit);
-            default:
-                return assertNever(header);
         }
     }
 

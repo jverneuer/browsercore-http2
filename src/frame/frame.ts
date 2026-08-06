@@ -7,7 +7,6 @@
  */
 
 import { FrameType, type Frame, type Http2StreamId } from "../types.js";
-import { assertNever } from "../utils.js";
 import { FrameParseError } from "../errors.js";
 import { validateFrameType } from "../schemas.js";
 
@@ -103,8 +102,6 @@ function serializePayload(frame: Frame): Uint8Array {
             new DataView(out.buffer).setUint32(0, frame.windowSizeIncrement & 0x7fffffff);
             return out;
         }
-        default:
-            return assertNever(frame);
     }
 }
 
