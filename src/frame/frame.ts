@@ -7,7 +7,6 @@
  */
 
 import { FrameType, type Frame, type Http2StreamId } from "../types.js";
-import { assertNever } from "../utils.js";
 
 /** The fixed 9-byte HTTP/2 frame header length. */
 export const FRAME_HEADER_LENGTH = 9;
@@ -99,8 +98,6 @@ function serializePayload(frame: Frame): Uint8Array {
             new DataView(out.buffer).setUint32(0, frame.windowSizeIncrement & 0x7fffffff);
             return out;
         }
-        default:
-            return assertNever(frame);
     }
 }
 
@@ -240,5 +237,3 @@ function decodeFrame(type: number, flags: number, streamId: Http2StreamId, paylo
             return { type: type as typeof FrameType.DATA, flags, streamId, payload } as Frame;
     }
 }
-
-void assertNever;
