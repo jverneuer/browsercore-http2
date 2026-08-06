@@ -377,12 +377,13 @@ describe("maybeResolveResponse with no registered resolver", () => {
 });
 
 describe("dispatch exhaustiveness guard", () => {
-    it("throws on a frame type outside the known 0x0-0x9 range", () => {
+    it("silently ignores a frame type outside the known 0x0-0x9 range (RFC 7540 §4.1)", () => {
         const mgr = createStreamManager(() => undefined);
-        // The Frame union exhausts 0x0-0x9; a type beyond that hits assertNever.
+        // The Frame union exhausts 0x0-0x9; a type beyond that is silently
+        // ignored per RFC 7540 §4.1 (unknown frame types MUST be ignored).
         expect(() =>
             mgr.dispatch({ type: 0xff, flags: 0, streamId: ID(1) } as never),
-        ).toThrow(/Unexpected value/);
+        ).not.toThrow();
     });
 });
 
