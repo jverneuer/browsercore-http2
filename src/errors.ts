@@ -33,13 +33,13 @@ export class Http2Error extends Error {
 /** The peer sent a GOAWAY — the connection is going down. */
 export class GoawayReceivedError extends Http2Error {
     public override readonly kind = "GoawayReceivedError" as const;
-    public readonly lastStreamId: number;
+    public readonly lastStreamId: Http2StreamId;
     public readonly errorCode: number;
     public readonly debugData: Uint8Array;
     public override readonly cause: Error | undefined;
 
     constructor(
-        lastStreamId: number,
+        lastStreamId: Http2StreamId,
         errorCode: number,
         debugData: Uint8Array,
         options?: { cause?: Error },
@@ -56,11 +56,11 @@ export class GoawayReceivedError extends Http2Error {
 /** The peer reset a specific stream with RST_STREAM. */
 export class RstStreamError extends Http2Error {
     public override readonly kind = "RstStreamError" as const;
-    public readonly streamId: number;
+    public readonly streamId: Http2StreamId;
     public readonly errorCode: number;
     public override readonly cause: Error | undefined;
 
-    constructor(streamId: number, errorCode: number, options?: { cause?: Error }) {
+    constructor(streamId: Http2StreamId, errorCode: number, options?: { cause?: Error }) {
         super(`RST_STREAM on stream ${streamId}: errorCode=${errorCode}`);
         this.name = "RstStreamError";
         this.streamId = streamId;
