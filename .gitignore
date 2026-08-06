@@ -6,3 +6,5 @@ dist/
 .DS_Store
 coverage/
 .vitest/
+.codedoc/
+index.html
