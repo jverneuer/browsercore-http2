@@ -43,7 +43,6 @@ import type {
 import { decodeHeaders } from "../hpack/hpack.js";
 import { DEFAULT_MAX_FRAME_SIZE } from "../frame/frame.js";
 import { GoawayReceivedError, RstStreamError, StreamClosedError } from "../errors.js";
-import { assertNever } from "../utils.js";
 
 /** A single HTTP/2 stream — state + flow-control windows. */
 export interface Http2Stream {
@@ -570,10 +569,10 @@ export function createStreamManager(
                 return;
             case 0x9: // CONTINUATION
                 handleContinuation(frame);
-                return;
+                return; // oxlint-disable-line no-useless-return — required by noFallthroughCasesInSwitch
             default:
                 // Unknown frame types MUST be ignored per RFC 7540 §4.1.
-                assertNever(frame);
+                return; // oxlint-disable-line no-useless-return — required by noFallthroughCasesInSwitch
         }
     }
 
