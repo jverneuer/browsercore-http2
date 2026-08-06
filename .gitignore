@@ -8,3 +8,5 @@ coverage/
 .vitest/
 .codedoc/
 index.html
+.codedoc/
+index.html
