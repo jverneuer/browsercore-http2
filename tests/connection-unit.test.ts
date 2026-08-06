@@ -202,7 +202,7 @@ describe("concurrency slot pool (MAX_CONCURRENT_STREAMS backpressure)", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
 
         // First request grabs the only slot and completes, freeing it for #2.
         const [r1, r2] = await Promise.all([
@@ -264,7 +264,7 @@ describe("waitForSettingsAck timeout -> handleFatal", () => {
         })();
 
         await expect(
-            connectHttp2({ transport: client, settingsAckTimeoutMs: 40 }),
+            connectHttp2({ transport: client, crypto, settingsAckTimeoutMs: 40 }),
         ).rejects.toBeInstanceOf(SettingsAckTimeoutError);
 
         await server.close();
@@ -316,7 +316,7 @@ describe("read-loop fatal error handling", () => {
             );
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         await expect(conn.request(sampleReq)).rejects.toThrow();
 
         await serverDone;
@@ -348,7 +348,7 @@ describe("read-loop fatal error handling", () => {
             await server.read().catch(() => undefined);
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         const pending = conn.request(sampleReq); // never answered
         // Abruptly close the peer without the client calling close() first.
         await server.close();
@@ -401,7 +401,7 @@ describe("ping with no explicit opaque data", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         const echoed = await conn.ping(); // no arg -> randomUint64 path
         expect(typeof echoed).toBe("bigint");
         expect(echoed).toBeGreaterThan(0n);
@@ -468,7 +468,7 @@ describe("request with a request body", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         const res = await conn.request({
             method: "POST",
             scheme: "https",

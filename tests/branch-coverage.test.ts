@@ -870,7 +870,7 @@ describe("connection.ts — ping handler ignores unrelated ACKs", () => {
             );
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         // Send a request to prompt the client to emit frames, then ping.
         const echoed = await conn.ping();
         expect(typeof echoed).toBe("bigint");
@@ -979,7 +979,7 @@ describe("connection.ts — request body branches", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         const res = await conn.request({
             method: "POST",
             scheme: "https",
@@ -1047,7 +1047,7 @@ describe("connection.ts — request body branches", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         // Empty body: endStreamNoBody = (body.length === 0) = true.
         const res = await conn.request({
             method: "POST",
@@ -1107,7 +1107,7 @@ describe("connection.ts — handleFatal when not closed", () => {
             );
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         await expect(
             conn.request({
                 method: "GET",
