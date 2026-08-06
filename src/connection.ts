@@ -29,7 +29,7 @@
  */
 
 import type { EventEmitter } from "node:events";
-import { crypto, type CryptoProvider } from "@browsercore/crypto";
+import type { CryptoProvider } from "@browsercore/crypto";
 import {
     silentLogger,
     FrameType,
@@ -456,7 +456,7 @@ export async function connectHttp2(options: Http2Options): Promise<Http2Connecti
     const clock = options.clock ?? systemClock;
     const id = `http2_${clock.now().toString(36)}` as Http2ConnectionId;
     const timeoutMs = options.settingsAckTimeoutMs ?? DEFAULT_SETTINGS_ACK_TIMEOUT_MS;
-    const provider = options.crypto ?? crypto;
+    const provider = options.crypto;
 
     // Single frame-sending callback shared by the manager and the connection.
     const sendFrame = (frame: Frame): void => {

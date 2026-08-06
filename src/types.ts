@@ -295,7 +295,9 @@ export interface Http2Options {
     readonly clock?: Clock;
     /**
      * Crypto provider for non-protocol randomness (e.g. PING opaque data).
-     * Defaults to the `@browsercore/crypto` singleton when omitted.
+     * Required for dependency injection — the package performs zero runtime
+     * imports of `@browsercore/crypto`, so the caller must supply a concrete
+     * `CryptoProvider` (e.g. the singleton exported by that package).
      */
-    readonly crypto?: CryptoProvider;
+    readonly crypto: CryptoProvider;
 }

@@ -10,6 +10,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { crypto } from "@browsercore/crypto";
 import { connectHttp2 } from "../src/connection.js";
 import { createFakeTransportPair, FakeTransport } from "./fake-transport.js";
 import { parseFrame, serializeFrame, FRAME_HEADER_LENGTH } from "../src/frame/frame.js";
@@ -149,7 +150,7 @@ describe("connectHttp2 handshake", () => {
         const { client, server } = createFakeTransportPair();
         const serverDone = runServer(server);
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         expect(conn.id).toMatch(/^http2_/);
         expect(conn.settings).toEqual({});
 
@@ -160,7 +161,7 @@ describe("connectHttp2 handshake", () => {
     it("exposes the peer's settings after the handshake", async () => {
         const { client, server } = createFakeTransportPair();
         const serverDone = runServer(server);
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         // The connection's `settings` reflect our advertised initial settings.
         expect(conn.settings).toEqual({});
         await conn.close();
@@ -172,7 +173,7 @@ describe("Http2Connection.request", () => {
     it("sends HEADERS + DATA and resolves with the response", async () => {
         const { client, server } = createFakeTransportPair();
         const serverDone = runServer(server);
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
 
         const res = await conn.request({
             method: "GET",
@@ -194,7 +195,7 @@ describe("Http2Connection.request", () => {
     it("multiplexes concurrent requests over one connection", async () => {
         const { client, server } = createFakeTransportPair();
         const serverDone = runServer(server);
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
 
         const paths = ["/a", "/b", "/c", "/d", "/e"];
         const responses = await Promise.all(
@@ -268,7 +269,7 @@ describe("Http2Connection.ping", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         const opaque = 0x1234567890abcdefn;
         const echoed = await conn.ping(opaque);
         expect(echoed).toBe(opaque);
@@ -325,7 +326,7 @@ describe("Http2Connection GOAWAY", () => {
             void req;
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
 
         await expect(
             conn.request({
@@ -380,7 +381,7 @@ describe("Http2Connection GOAWAY", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client });
+        const conn = await connectHttp2({ transport: client, crypto });
         await conn.goaway(ID(0), 0);
         await serverDone;
         await conn.close();
