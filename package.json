@@ -32,16 +32,14 @@
     },
     "scripts": {
         "clean": "rm -rf dist",
-        "build": "tsc -p tsconfig.build.json",
+        "build": "tsc -p tsconfig.json",
         "prepublishOnly": "npm run clean && npm run build",
         "typecheck": "tsc -p tsconfig.json --noEmit",
         "lint": "oxlint --type-aware src/",
-        "test": "vitest run",
-        "coverage-md": "./bin/coverage-md.mjs"
+        "test": "vitest run"
     },
     "devDependencies": {
         "@browsercore/crypto": "0.2.0",
-        "@browsercore/dev": "latest",
         "@types/node": "^26.1.2",
         "@vitest/coverage-v8": "^4.1.10",
         "typescript": "^7.0.0",
