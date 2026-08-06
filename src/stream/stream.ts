@@ -569,12 +569,10 @@ export function createStreamManager(
                 return;
             case 0x9: // CONTINUATION
                 handleContinuation(frame);
-                // oxlint-disable-next-line no-useless-return — guards fallthrough to the no-op default
-                return;
+                return; // oxlint-disable-line no-useless-return — required by noFallthroughCasesInSwitch
             default:
                 // Unknown frame types MUST be ignored per RFC 7540 §4.1.
-                // oxlint-disable-next-line no-useless-return — void dispatch; explicit return is the no-op ignore
-                return;
+                return; // oxlint-disable-line no-useless-return — required by noFallthroughCasesInSwitch
         }
     }
 

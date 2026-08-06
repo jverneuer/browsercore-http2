@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import { serializeFrame, parseFrame, parseFrameHeader } from "../src/frame/frame.js";
 import { FRAME_HEADER_LENGTH } from "../src/frame/frame.js";
+import { FrameParseError } from "../src/errors.js";
 import type { Frame, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
 
@@ -260,13 +261,13 @@ describe("CONTINUATION frame", () => {
 });
 
 describe("parse error paths", () => {
-    it("throws RangeError when the buffer is too short for a frame header", () => {
+    it("throws FrameParseError when the buffer is too short for a frame header", () => {
         const buf = new Uint8Array([0, 0, 0, 0]); // only 4 bytes, header needs 9
-        expect(() => parseFrameHeader(buf)).toThrow(RangeError);
-        expect(() => parseFrame(buf)).toThrow(RangeError);
+        expect(() => parseFrameHeader(buf)).toThrow(FrameParseError);
+        expect(() => parseFrame(buf)).toThrow(FrameParseError);
     });
 
-    it("throws RangeError when the buffer is too short for the advertised payload", () => {
+    it("throws FrameParseError when the buffer is too short for the advertised payload", () => {
         // Header advertises a 10-byte payload but the buffer only has 3 more bytes.
         const header = new Uint8Array(FRAME_HEADER_LENGTH);
         const view = new DataView(header.buffer);
@@ -275,7 +276,7 @@ describe("parse error paths", () => {
         view.setUint8(2, 10); // length = 10
         view.setUint8(3, FrameType.DATA);
         const buf = new Uint8Array([...header, 1, 2, 3]);
-        expect(() => parseFrame(buf)).toThrow(RangeError);
+        expect(() => parseFrame(buf)).toThrow(FrameParseError);
     });
 
     it("parses an unknown frame type into a generic frame (RFC 7540 §4.1)", () => {
