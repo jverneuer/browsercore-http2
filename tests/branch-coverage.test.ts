@@ -320,6 +320,10 @@ describe("encodeInteger edge cases", () => {
         const result = decodeInteger(buf, 0, 7);
         expect(result.value).toBe(128);
     });
+
+    it("throws HpackError on a negative integer (direct)", () => {
+        expect(() => encodeInteger(-1, 7)).toThrow(HpackError);
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -1056,6 +1060,74 @@ describe("connection.ts — request body branches", () => {
             path: "/upload",
             headers: new Map(),
             body: new Uint8Array(0),
+        });
+        expect(res.statusCode).toBe(200);
+        await conn.close();
+        await serverDone;
+    });
+
+    it("sends HEADERS+DATA with EMPTY_BYTES when body is undefined", async () => {
+        // Covers the `req.body ?? EMPTY_BYTES` branch where body is undefined.
+        const { client, server } = createFakeTransportPair();
+        const serverDone = (async () => {
+            await server.read();
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0,
+                    streamId: ID(0),
+                    ack: false,
+                    settings: {},
+                }),
+            );
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0x1,
+                    streamId: ID(0),
+                    ack: true,
+                    settings: {},
+                }),
+            );
+            for (;;) {
+                let frame: Frame;
+                try {
+                    frame = await readFrame(server);
+                } catch {
+                    return;
+                }
+                if (frame.type === FrameType.HEADERS) {
+                    await server.write(
+                        serializeFrame({
+                            type: FrameType.HEADERS,
+                            flags: 0x4,
+                            streamId: frame.streamId,
+                            endHeaders: true,
+                            endStream: false,
+                            padded: false,
+                            payload: new Uint8Array([0x88]),
+                        }),
+                    );
+                    await server.write(
+                        serializeFrame({
+                            type: FrameType.DATA,
+                            flags: 0x1,
+                            streamId: frame.streamId,
+                            payload: new Uint8Array(0),
+                        }),
+                    );
+                }
+            }
+        })();
+
+        const conn = await connectHttp2({ transport: client, crypto });
+        const res = await conn.request({
+            method: "POST",
+            scheme: "https",
+            authority: "example.com",
+            path: "/upload",
+            headers: new Map(),
+            body: undefined,
         });
         expect(res.statusCode).toBe(200);
         await conn.close();
