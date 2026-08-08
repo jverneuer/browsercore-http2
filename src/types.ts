@@ -7,6 +7,7 @@
 
 import type { Transport } from "@browsercore/transport";
 import type { CryptoProvider } from "@browsercore/crypto";
+import type { EventProvider } from "@browsercore/contracts";
 
 /** Branded HTTP/2 connection identifier (opaque correlation id). */
 export type Http2ConnectionId = string & { __brand: "Http2ConnectionId" };
@@ -254,4 +255,14 @@ export interface Http2Options {
      * `CryptoProvider` (e.g. the singleton exported by that package).
      */
     readonly crypto: CryptoProvider;
+    /**
+     * Event provider for connection-level signals (SETTINGS ACK, PING ACK,
+     * GOAWAY, stream lifecycle). Injected by the application entrypoint
+     * (e.g. browsersmith passes the Node EventEmitter-backed provider).
+     * Decouples the stream manager from `node:events`.
+     *
+     * Required — this package provides no fallback. Inject the runtime
+     * EventProvider via the composition root (browsersmith).
+     */
+    readonly events: EventProvider;
 }

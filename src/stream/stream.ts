@@ -32,7 +32,7 @@
  *   majority of real servers.
  */
 
-import type { EventEmitter } from "node:events";
+import type { EventProvider } from "@browsercore/contracts";
 import type {
     FlowControlWindow,
     Frame,
@@ -194,72 +194,14 @@ function parseStatus(headers: ReadonlyMap<string, string>): number {
 }
 
 // ---------------------------------------------------------------------------
-// EventTarget-based emitter
+// EventProvider composition
 // ---------------------------------------------------------------------------
 
-/**
- * Minimal EventEmitter-shaped facade over the platform {@link EventTarget}.
- *
- * The `unicorn/prefer-event-target` rule forbids `new EventEmitter()`, but the
- * manager's public contract (`StreamManager & EventEmitter`) and its consumers
- * rely on the EventEmitter-style API (`.on`/`.once`/`.off`/`.emit` with variadic
- * args). We back the manager with an EventTarget and translate: listeners are
- * registered with `addEventListener`, and `emit` dispatches a `CustomEvent` whose
- * `detail` carries the variadic args. A wrapper map lets `off`/`removeListener`
- * match by the original listener reference, exactly as EventEmitter does.
- */
-class StreamEventBridge extends EventTarget {
-    private readonly wrappers = new Map<(...args: unknown[]) => void, { wrapper: EventListener; event: string }>();
-
-    public on(event: string | symbol, listener: (...args: unknown[]) => void): void {
-        const wrapper = ((e: Event) => {
-            listener(...(e as CustomEvent<unknown[]>).detail);
-        }) as EventListener;
-        const key = event as string;
-        this.wrappers.set(listener, { wrapper, event: key });
-        this.addEventListener(key, wrapper);
-    }
-
-    public once(event: string | symbol, listener: (...args: unknown[]) => void): void {
-        const wrapper = ((e: Event) => {
-            this.wrappers.delete(listener);
-            listener(...(e as CustomEvent<unknown[]>).detail);
-        }) as EventListener;
-        const key = event as string;
-        this.wrappers.set(listener, { wrapper, event: key });
-        this.addEventListener(key, wrapper, { once: true });
-    }
-
-    public off(event: string | symbol, listener: (...args: unknown[]) => void): void {
-        const entry = this.wrappers.get(listener);
-        if (entry !== undefined) {
-            this.wrappers.delete(listener);
-            this.removeEventListener(event as string, entry.wrapper);
-        }
-    }
-
-    public removeListener(event: string | symbol, listener: (...args: unknown[]) => void): void {
-        this.off(event, listener);
-    }
-
-    public removeAllListeners(event?: string | symbol): void {
-        const target = event as string | undefined;
-        const toRemove: Array<(...args: unknown[]) => void> = [];
-        for (const [listener, entry] of this.wrappers) {
-            if (target === undefined || entry.event === target) {
-                this.removeEventListener(entry.event, entry.wrapper);
-                toRemove.push(listener);
-            }
-        }
-        for (const listener of toRemove) {
-            this.wrappers.delete(listener);
-        }
-    }
-
-    public emit(event: string | symbol, ...args: unknown[]): boolean {
-        return this.dispatchEvent(new CustomEvent<unknown[]>(event as string, { detail: args }));
-    }
-}
+// The manager no longer constructs its own emitter. An {@link EventProvider} is
+// injected at creation time (see {@link createStreamManager}) and the manager
+// delegates its entire event surface to it. This decouples the stream manager
+// from `node:events` / `EventTarget` and keeps it runtime-agnostic (Node
+// EventEmitter, EventTarget, mock), exactly as the production `Transport` does.
 
 // ---------------------------------------------------------------------------
 // Module-scope shared helpers
@@ -311,15 +253,18 @@ function transitionOnEndStream(stream: ManagedStream): void {
 }
 
 // ---------------------------------------------------------------------------
-// Manager implementation (an EventEmitter so the connection can subscribe)
+// Manager implementation — emits connection-level signals by delegating to the
+// injected EventProvider, so the connection can subscribe.
 // ---------------------------------------------------------------------------
 
 /**
  * Create a stream manager. `sendFrame` is the callback for serialized frame I/O
  * — the manager never touches the transport directly.
  *
- * The returned object is also an {@link EventEmitter} emitting connection-level
- * signals the connection layer reacts to:
+ * `events` is the injected {@link EventProvider} backend the manager emits
+ * connection-level signals through. The returned object delegates its entire
+ * event surface to that provider, emitting the signals the connection layer
+ * reacts to:
  *   - `"settingsAck"`            — peer acknowledged our SETTINGS
  *   - `"pingAck", opaqueData`    — peer echoed a PING
  *   - `"goaway", {lastStreamId, errorCode, debugData}` — peer is going away
@@ -329,7 +274,8 @@ function transitionOnEndStream(stream: ManagedStream): void {
  */
 export function createStreamManager(
     sendFrame: (frame: Frame) => void,
-): StreamManager & EventEmitter {
+    events: EventProvider,
+): StreamManager & EventProvider {
     const streams = new Map<Http2StreamId, ManagedStream>();
 
     /**
@@ -351,12 +297,10 @@ export function createStreamManager(
     /** Next client-initiated (odd) stream id. */
     let nextStreamId = 1;
 
-    const emitter = new StreamEventBridge();
-
     // --- frame I/O helpers -----------------------------------------------------
 
     function emitEvent(type: string, ...args: unknown[]): void {
-        emitter.emit(type, ...args);
+        events.emit(type, ...args);
     }
 
     function sendSettingsAck(): void {
@@ -823,9 +767,9 @@ export function createStreamManager(
         streams.clear();
     }
 
-    // Mirror EventEmitter's core methods onto the manager so the returned object
-    // satisfies the `StreamManager & EventEmitter` intersection type and callers
-    // can subscribe to events through a single handle.
+    // Delegate the event surface to the injected provider so the returned object
+    // satisfies the `StreamManager & EventProvider` intersection type and callers
+    // can subscribe to connection-level signals through a single handle.
     const manager = {
         openStream,
         dispatch,
@@ -837,24 +781,27 @@ export function createStreamManager(
             return maxConcurrentStreams;
         },
         on: (event: string | symbol, listener: (...args: unknown[]) => void) => {
-            emitter.on(event, listener);
+            events.on(event as string, listener);
         },
         once: (event: string | symbol, listener: (...args: unknown[]) => void) => {
-            emitter.once(event, listener);
+            events.once(event as string, listener);
         },
         off: (event: string | symbol, listener: (...args: unknown[]) => void) => {
-            emitter.off(event, listener);
+            events.off(event as string, listener);
         },
         removeListener: (event: string | symbol, listener: (...args: unknown[]) => void) => {
-            emitter.removeListener(event, listener);
+            events.removeListener(event as string, listener);
         },
         removeAllListeners: (event?: string | symbol) => {
-            emitter.removeAllListeners(event);
+            events.removeAllListeners(event as string);
+        },
+        listenerCount: (event: string | symbol): number => {
+            return events.listenerCount(event as string);
         },
         emit: (event: string | symbol, ...args: unknown[]) => {
-            emitter.emit(event, ...args);
+            return events.emit(event as string, ...args);
         },
-    } as StreamManager & EventEmitter;
+    } as StreamManager & EventProvider;
 
     return manager;
 }

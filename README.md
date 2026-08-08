@@ -27,7 +27,11 @@ a test double.
 ```ts
 import { connectHttp2, GoawayReceivedError } from "@browsercore/http2";
 
-const conn = await connectHttp2({ transport, initialSettings: { ENABLE_PUSH: 0 } });
+const conn = await connectHttp2({
+    transport,
+    events,
+    initialSettings: { ENABLE_PUSH: 0 },
+});
 
 const res = await conn.request({
     method: "GET",
@@ -64,10 +68,13 @@ await conn.close();
 
 ```
 @browsercore/http2
-  └─ @browsercore/transport
-        └─ node:net / node:dns / node:crypto
+  ├─ @browsercore/transport
+  │     └─ node:net / node:dns / node:crypto
+  └─ @browsercore/contracts
 ```
 
+`@browsercore/contracts` supplies the `EventProvider` interface the package
+implements (injected, never imported from a concrete `node:events` backend).
 No other `@browsercore/*` packages are imported.
 
 ## Position in BrowserCore

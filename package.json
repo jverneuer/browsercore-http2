@@ -48,7 +48,8 @@
         "oxlint-tsgolint": "7.0.2001"
     },
     "dependencies": {
-        "@browsercore/transport": "0.2.4",
+        "@browsercore/contracts": "^0.2.1",
+        "@browsercore/transport": "^0.2.5",
         "zod": "^4.4.3"
     },
     "engines": {

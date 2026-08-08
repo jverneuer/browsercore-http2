@@ -1,20 +1,21 @@
 /**
- * stream.ts StreamEventBridge coverage.
+ * stream.ts event-provider coverage.
  *
- * The manager backs its EventEmitter-shaped API (`on`/`once`/`off`/
- * `removeListener`/`removeAllListeners`/`emit`) with an EventTarget and a
- * wrapper map. The connection-level integration tests only exercise `on` and
- * `once`; this file covers the removal paths and the `emit` return value.
+ * The manager exposes its event-shaped API (`on`/`once`/`off`/`removeListener`/
+ * `removeAllListeners`/`emit`) by delegating to an injected EventProvider. The
+ * connection-level integration tests only exercise `on` and `once`; this file
+ * covers the removal paths and the `emit` return value.
  */
 
 import { describe, expect, it } from "vitest";
 import { createStreamManager } from "../src/stream/stream.js";
+import { createMockEventProvider } from "./test-helpers.js";
 
 function noop(): void {}
 
-describe("StreamEventBridge — removal paths", () => {
+describe("StreamEventProvider — removal paths", () => {
     it("removeListener stops further delivery of that listener", () => {
-        const mgr = createStreamManager(noop);
+        const mgr = createStreamManager(noop, createMockEventProvider());
         let calls = 0;
         const fn = (): void => {
             calls++;
@@ -28,7 +29,7 @@ describe("StreamEventBridge — removal paths", () => {
     });
 
     it("off is an alias for removeListener", () => {
-        const mgr = createStreamManager(noop);
+        const mgr = createStreamManager(noop, createMockEventProvider());
         let calls = 0;
         const fn = (): void => {
             calls++;
@@ -40,12 +41,12 @@ describe("StreamEventBridge — removal paths", () => {
     });
 
     it("removeListener for an unregistered listener is a safe no-op", () => {
-        const mgr = createStreamManager(noop);
+        const mgr = createStreamManager(noop, createMockEventProvider());
         expect(() => mgr.removeListener("never", () => undefined)).not.toThrow();
     });
 
     it("removeAllListeners() clears listeners across every event", () => {
-        const mgr = createStreamManager(noop);
+        const mgr = createStreamManager(noop, createMockEventProvider());
         let a = 0;
         let b = 0;
         mgr.on("a", () => a++);
@@ -58,7 +59,7 @@ describe("StreamEventBridge — removal paths", () => {
     });
 
     it("removeAllListeners(event) clears only that event", () => {
-        const mgr = createStreamManager(noop);
+        const mgr = createStreamManager(noop, createMockEventProvider());
         let a = 0;
         let b = 0;
         mgr.on("a", () => a++);
@@ -71,7 +72,7 @@ describe("StreamEventBridge — removal paths", () => {
     });
 
     it("once fires only on the first emit", () => {
-        const mgr = createStreamManager(noop);
+        const mgr = createStreamManager(noop, createMockEventProvider());
         let calls = 0;
         mgr.once("o", () => calls++);
         mgr.emit("o");
@@ -80,7 +81,7 @@ describe("StreamEventBridge — removal paths", () => {
     });
 
     it("emit dispatches variadic args to listeners", () => {
-        const mgr = createStreamManager(noop);
+        const mgr = createStreamManager(noop, createMockEventProvider());
         let received: unknown[] = [];
         mgr.on("args", (...a: unknown[]) => {
             received = a;
@@ -90,13 +91,13 @@ describe("StreamEventBridge — removal paths", () => {
     });
 
     it("emit delivers to listeners (the manager proxy does not forward the bridge return value)", () => {
-        const mgr = createStreamManager(noop);
+        const mgr = createStreamManager(noop, createMockEventProvider());
         let calls = 0;
         mgr.on("e", () => {
             calls++;
         });
-        // The proxy `emit` returns undefined (it does not return the bridge's
-        // dispatchEvent boolean) — exercising it still drives delivery.
+        // The manager's `emit` forwards to the injected EventProvider and returns
+        // its boolean — exercising it still drives delivery to the listener.
         mgr.emit("e");
         expect(calls).toBe(1);
     });

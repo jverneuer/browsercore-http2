@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 import { crypto } from "@browsercore/crypto";
 import { Http2ConnectionImpl, connectHttp2 } from "../src/connection.js";
 import { createStreamManager } from "../src/stream/stream.js";
+import { createMockEventProvider } from "./test-helpers.js";
 import { createFakeTransportPair, FakeTransport } from "./fake-transport.js";
 import { serializeFrame, parseFrame, parseFrameHeader, FRAME_HEADER_LENGTH } from "../src/frame/frame.js";
 import type { Frame, Http2Request, Http2StreamId } from "../src/types.js";
@@ -76,8 +77,8 @@ function makeConn(): {
     const sendFrame = (f: Frame): void => {
         frames.push(f);
     };
-    const manager = createStreamManager(sendFrame);
-    const conn = new Http2ConnectionImpl(CONN_ID, { transport }, manager, sendFrame, crypto);
+    const manager = createStreamManager(sendFrame, createMockEventProvider());
+    const conn = new Http2ConnectionImpl(CONN_ID, { transport, events: createMockEventProvider() }, manager, sendFrame, crypto);
     return { conn, transport, frames, manager };
 }
 
@@ -123,12 +124,12 @@ describe("close() behavior", () => {
 
     it("swallows a GOAWAY write failure on graceful close", async () => {
         const transport = new FakeTransport("c");
-        const manager = createStreamManager(() => undefined);
+        const manager = createStreamManager(() => undefined, createMockEventProvider());
         // sendFrame throws only for the GOAWAY close() emits.
         const sendFrame = (f: Frame): void => {
             if (f.type === FrameType.GOAWAY) throw new Error("write broken");
         };
-        const conn = new Http2ConnectionImpl(CONN_ID, { transport }, manager, sendFrame, crypto);
+        const conn = new Http2ConnectionImpl(CONN_ID, { transport, events: createMockEventProvider() }, manager, sendFrame, crypto);
         // Must not reject despite the GOAWAY send throwing.
         await expect(conn.close()).resolves.toBeUndefined();
         expect(transport.state.state).toBe("closed");
@@ -202,7 +203,7 @@ describe("concurrency slot pool (MAX_CONCURRENT_STREAMS backpressure)", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
 
         // First request grabs the only slot and completes, freeing it for #2.
         const [r1, r2] = await Promise.all([
@@ -264,7 +265,7 @@ describe("waitForSettingsAck timeout -> handleFatal", () => {
         })();
 
         await expect(
-            connectHttp2({ transport: client, crypto, settingsAckTimeoutMs: 40 }),
+            connectHttp2({ transport: client, crypto, events: createMockEventProvider(), settingsAckTimeoutMs: 40 }),
         ).rejects.toBeInstanceOf(SettingsAckTimeoutError);
 
         await server.close();
@@ -316,7 +317,7 @@ describe("read-loop fatal error handling", () => {
             );
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         await expect(conn.request(sampleReq)).rejects.toThrow();
 
         await serverDone;
@@ -348,7 +349,7 @@ describe("read-loop fatal error handling", () => {
             await server.read().catch(() => undefined);
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         const pending = conn.request(sampleReq); // never answered
         // Abruptly close the peer without the client calling close() first.
         await server.close();
@@ -401,7 +402,7 @@ describe("ping with no explicit opaque data", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         const echoed = await conn.ping(); // no arg -> randomUint64 path
         expect(typeof echoed).toBe("bigint");
         expect(echoed).toBeGreaterThan(0n);
@@ -468,7 +469,7 @@ describe("request with a request body", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         const res = await conn.request({
             method: "POST",
             scheme: "https",
@@ -496,8 +497,8 @@ describe("slot release on stream completion", () => {
         const sendFrame = (f: Frame): void => {
             frames.push(f);
         };
-        const manager = createStreamManager(sendFrame);
-        const conn = new Http2ConnectionImpl(CONN_ID, { transport }, manager, sendFrame, crypto);
+        const manager = createStreamManager(sendFrame, createMockEventProvider());
+        const conn = new Http2ConnectionImpl(CONN_ID, { transport, events: createMockEventProvider() }, manager, sendFrame, crypto);
         manager.dispatch({
             type: FrameType.SETTINGS,
             flags: 0,
@@ -553,8 +554,8 @@ describe("read-loop frame reassembly across fragmented reads", () => {
         const sendFrame = (f: Frame): void => {
             frames.push(f);
         };
-        const manager = createStreamManager(sendFrame);
-        const conn = new Http2ConnectionImpl(CONN_ID, { transport: client }, manager, sendFrame, crypto);
+        const manager = createStreamManager(sendFrame, createMockEventProvider());
+        const conn = new Http2ConnectionImpl(CONN_ID, { transport: client, events: createMockEventProvider() }, manager, sendFrame, crypto);
         conn.startReadLoop(); // readLoop now blocked on transport.read()
 
         // A SETTINGS frame advertising MAX_CONCURRENT_STREAMS=7 (6-byte payload).

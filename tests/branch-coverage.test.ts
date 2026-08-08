@@ -30,6 +30,7 @@ import type { Frame, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
 import { Http2ConnectionImpl, connectHttp2 } from "../src/connection.js";
 import { createStreamManager } from "../src/stream/stream.js";
+import { createMockEventProvider } from "./test-helpers.js";
 import { createFakeTransportPair, FakeTransport } from "./fake-transport.js";
 import { GoawayReceivedError, ConnectionClosedError } from "../src/errors.js";
 import type { Http2ConnectionId } from "../src/types.js";
@@ -439,8 +440,8 @@ function makeConn(): {
     const sendFrame = (f: Frame): void => {
         frames.push(f);
     };
-    const manager = createStreamManager(sendFrame);
-    const conn = new Http2ConnectionImpl(CONN_ID, { transport }, manager, sendFrame, crypto);
+    const manager = createStreamManager(sendFrame, createMockEventProvider());
+    const conn = new Http2ConnectionImpl(CONN_ID, { transport, events: createMockEventProvider() }, manager, sendFrame, crypto);
     return { conn, transport, frames, manager };
 }
 
@@ -538,13 +539,13 @@ describe("connection.ts branches — readLoop wraps non-Error values in Error", 
         // Covers the `err instanceof Error ? err : new Error(String(err))` right
         // branch (line 386): the manager's dispatch throws a non-Error value.
         const { client, server } = createFakeTransportPair();
-        const manager = createStreamManager(() => undefined);
+        const manager = createStreamManager(() => undefined, createMockEventProvider());
         (manager as { dispatch: (frame: Frame) => void }).dispatch = () => {
             throw "boom";
         };
         const conn = new Http2ConnectionImpl(
             CONN_ID,
-            { transport: client },
+            { transport: client, events: createMockEventProvider() },
             manager,
             () => undefined,
             crypto,
@@ -572,10 +573,10 @@ describe("connection.ts branches — readLoop wraps non-Error values in Error", 
         const transport = new FakeTransport("c");
         (transport as unknown as { read: () => Promise<Uint8Array> }).read = () =>
             Promise.reject("connection reset by peer");
-        const manager = createStreamManager(() => undefined);
+        const manager = createStreamManager(() => undefined, createMockEventProvider());
         const conn = new Http2ConnectionImpl(
             CONN_ID,
-            { transport },
+            { transport, events: createMockEventProvider() },
             manager,
             () => undefined,
             crypto,
@@ -615,7 +616,7 @@ describe("stream.ts branches — padded DATA edge cases", () => {
                 cap.frames.push(f);
             },
         };
-        const mgr = createStreamManager(cap.sendFrame);
+        const mgr = createStreamManager(cap.sendFrame, createMockEventProvider());
         return { cap, mgr };
     }
 
@@ -757,7 +758,7 @@ describe("stream.ts branches — padded DATA edge cases", () => {
 
 describe("stream.ts branches — handleContinuation for non-push streams", () => {
     it("handleContinuation on a client stream without END_HEADERS buffers and waits", async () => {
-        const mgr = createStreamManager(() => undefined);
+        const mgr = createStreamManager(() => undefined, createMockEventProvider());
         const stream = mgr.openStream();
 
         const done = new Promise<number>((resolve, reject) =>
@@ -797,7 +798,7 @@ describe("stream.ts branches — handleContinuation for non-push streams", () =>
 
 describe("stream.ts branches — openStream id overflow", () => {
     it("wraps nextStreamId back to 1 on 31-bit overflow", () => {
-        const mgr = createStreamManager(() => undefined);
+        const mgr = createStreamManager(() => undefined, createMockEventProvider());
         // Manually drive nextStreamId toward overflow by opening many streams.
         // 2^31 client streams is impractical, so we test the wrap logic by
         // opening a few streams and confirming the id sequence.
@@ -874,7 +875,7 @@ describe("connection.ts — ping handler ignores unrelated ACKs", () => {
             );
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         // Send a request to prompt the client to emit frames, then ping.
         const echoed = await conn.ping();
         expect(typeof echoed).toBe("bigint");
@@ -983,7 +984,7 @@ describe("connection.ts — request body branches", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         const res = await conn.request({
             method: "POST",
             scheme: "https",
@@ -1051,7 +1052,7 @@ describe("connection.ts — request body branches", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         // Empty body: endStreamNoBody = (body.length === 0) = true.
         const res = await conn.request({
             method: "POST",
@@ -1120,7 +1121,7 @@ describe("connection.ts — request body branches", () => {
             }
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         const res = await conn.request({
             method: "POST",
             scheme: "https",
@@ -1179,7 +1180,7 @@ describe("connection.ts — handleFatal when not closed", () => {
             );
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         await expect(
             conn.request({
                 method: "GET",
@@ -1418,7 +1419,7 @@ describe("stream/stream.ts — remaining uncovered branches", () => {
         // Covers the `if (cap <= 0)` guard in drainSendQueue. When both the
         // connection and stream windows are exhausted, cap = 0 and the function
         // returns without sending.
-        const mgr = createStreamManager(() => undefined);
+        const mgr = createStreamManager(() => undefined, createMockEventProvider());
         // Shrink both windows to 0 by sending a large payload that exhausts them.
         mgr.dispatch({
             type: FrameType.SETTINGS,
@@ -1437,7 +1438,7 @@ describe("stream/stream.ts — remaining uncovered branches", () => {
     it("handleData: padLen >= payload.length -> empty data (line 608)", () => {
         // Covers the `end > 0 ? ... : new Uint8Array(0)` false branch. When
         // padLen >= payload.length, end <= 0 and data is empty.
-        const mgr = createStreamManager(() => undefined);
+        const mgr = createStreamManager(() => undefined, createMockEventProvider());
         const stream = mgr.openStream();
         const done = new Promise<{ body: Uint8Array }>((resolve, reject) =>
             mgr.expectResponse(
@@ -1471,7 +1472,7 @@ describe("stream/stream.ts — remaining uncovered branches", () => {
     it("sendData: endStream=false branch (line 796)", () => {
         // Covers the `if (endStream)` false branch in sendData. When endStream
         // is false, sendQueueEndStream stays false.
-        const mgr = createStreamManager(() => undefined);
+        const mgr = createStreamManager(() => undefined, createMockEventProvider());
         const stream = mgr.openStream();
         mgr.sendData(stream.id, new Uint8Array([0x61]), false);
         // The stream's sendQueueEndStream is not set (we can't observe it
@@ -1483,7 +1484,7 @@ describe("stream/stream.ts — remaining uncovered branches", () => {
         // Exercises both branches of `end > 0 ? subarray : empty`:
         //   - True branch: padLen < payload.length (end > 0)
         //   - False branch: padLen >= payload.length (end <= 0)
-        const mgr = createStreamManager(() => undefined);
+        const mgr = createStreamManager(() => undefined, createMockEventProvider());
         const stream = mgr.openStream();
         const done = new Promise<{ body: Uint8Array }>((resolve, reject) =>
             mgr.expectResponse(
@@ -1530,7 +1531,7 @@ describe("stream/stream.ts — remaining uncovered branches", () => {
         // Covers the `else if (s.state === "remote_reserved")` false branch.
         // When the stream is in "remote_half_closed" state and END_STREAM
         // arrives, transitionOnEndStream falls through (no state change).
-        const mgr = createStreamManager(() => undefined);
+        const mgr = createStreamManager(() => undefined, createMockEventProvider());
         const stream = mgr.openStream();
         // Drive the stream to remote_half_closed: send HEADERS with END_STREAM
         // (which moves open -> remote_half_closed via transitionOnEndStream).
