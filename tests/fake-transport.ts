@@ -5,11 +5,18 @@
  * and inspect bytes the client "wrote".
  *
  * It is NOT a real transport — it exists only to drive connection.test.ts.
+ *
+ * The Transport event surface (on/once/off/removeListener/emit) is satisfied by
+ * delegating to an injected {@link EventProvider} — composition rather than
+ * inheritance, matching the production Transport pattern. Tests that do not need
+ * to inspect transport events can omit the provider; an in-memory mock is used
+ * by default.
  */
 
-import { EventEmitter } from "node:events";
+import type { EventProvider } from "@browsercore/contracts";
 import type { Transport } from "@browsercore/transport";
 import type { CloseReason, TransportId, TransportState } from "@browsercore/transport";
+import { createMockEventProvider } from "./test-helpers.js";
 
 /** A minimal stand-in for the branded transport id. */
 type Id = TransportId;
@@ -29,9 +36,14 @@ export function createFakeTransportPair(): {
     return { client, server };
 }
 
-export class FakeTransport extends EventEmitter implements Transport {
+export class FakeTransport implements Transport {
     public readonly id: Id;
     private _state: TransportState = { state: "open" };
+    /**
+     * Injected EventProvider backend — the Transport event surface is satisfied
+     * entirely through delegation, decoupling the fake from node:events.
+     */
+    private readonly events: EventProvider;
     /** Bytes written by this side, buffered for the peer to read. */
     private readonly _writeBuffer: number[] = [];
     /**
@@ -48,9 +60,41 @@ export class FakeTransport extends EventEmitter implements Transport {
     /** The connected peer, if any. */
     public _peer: FakeTransport | undefined;
 
-    public constructor(id: string) {
-        super();
+    public constructor(id: string, events: EventProvider = createMockEventProvider()) {
         this.id = id as Id;
+        this.events = events;
+    }
+
+    // -------------------------------------------------------------------------
+    // EventProvider delegation — decouples the fake from node:events.
+    // -------------------------------------------------------------------------
+
+    public on(event: string, listener: (...args: unknown[]) => void): void {
+        this.events.on(event, listener);
+    }
+
+    public once(event: string, listener: (...args: unknown[]) => void): void {
+        this.events.once(event, listener);
+    }
+
+    public off(event: string, listener: (...args: unknown[]) => void): void {
+        this.events.off(event, listener);
+    }
+
+    public removeListener(event: string, listener: (...args: unknown[]) => void): void {
+        this.events.removeListener(event, listener);
+    }
+
+    public emit(event: string, ...args: unknown[]): boolean {
+        return this.events.emit(event, ...args);
+    }
+
+    public listenerCount(event: string): number {
+        return this.events.listenerCount(event);
+    }
+
+    public removeAllListeners(event?: string): void {
+        this.events.removeAllListeners(event);
     }
 
     public get state(): TransportState {

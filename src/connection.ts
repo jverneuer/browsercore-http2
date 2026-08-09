@@ -28,7 +28,7 @@
  *   - PRIORITY frames are accepted but do not reorder the send queue.
  */
 
-import type { EventEmitter } from "node:events";
+import type { EventProvider } from "@browsercore/contracts";
 import type { CryptoProvider } from "@browsercore/crypto";
 import {
     FrameType,
@@ -78,8 +78,8 @@ export class Http2ConnectionImpl implements Http2Connection {
     private readonly clock: Clock;
     /** Crypto provider for non-protocol randomness (e.g. PING opaque data). */
     private readonly provider: CryptoProvider;
-    /** Stream manager (also an EventEmitter for connection-level signals). */
-    private readonly manager: StreamManager & EventEmitter;
+    /** Stream manager (emits connection-level signals via injected EventProvider). */
+    private readonly manager: StreamManager & EventProvider;
     /** Serializes + writes a frame to the transport. */
     private readonly sendFrame: (frame: Frame) => void;
 
@@ -97,7 +97,7 @@ export class Http2ConnectionImpl implements Http2Connection {
     public constructor(
         id: Http2ConnectionId,
         options: Http2Options,
-        manager: StreamManager & EventEmitter,
+        manager: StreamManager & EventProvider,
         sendFrame: (frame: Frame) => void,
         provider: CryptoProvider,
     ) {
@@ -167,10 +167,13 @@ export class Http2ConnectionImpl implements Http2Connection {
             }
             // Resolve only on the ACK that echoes *our* opaque data. Late or
             // unrelated ACKs are ignored (the handler self-removes on match).
-            const handler = (acked: bigint): void => {
+            // The injected EventProvider types listeners as
+            // `(...args: unknown[]) => void`, so the handler narrows the opaque
+            // data from `unknown` before comparing.
+            const handler = (acked: unknown): void => {
                 if (acked === data) {
                     this.manager.off("pingAck", handler);
-                    resolve(acked);
+                    resolve(acked as bigint);
                 }
             };
             this.manager.on("pingAck", handler);
@@ -309,12 +312,18 @@ export class Http2ConnectionImpl implements Http2Connection {
         // The manager emits connection-level signals we need to react to:
         //   - "goaway": stop accepting new work.
         //   - "streamClosed": free a concurrency slot.
-        this.manager.on("goaway", (lastStreamId: Http2StreamId, errorCode: number, debugData: Bytes) => {
-            this.receivedGoaway = { lastStreamId, errorCode, debugData };
+        // The injected EventProvider types listeners as
+        // `(...args: unknown[]) => void`; narrow the args from `unknown` here.
+        this.manager.on("goaway", (lastStreamId: unknown, errorCode: unknown, debugData: unknown) => {
+            this.receivedGoaway = {
+                lastStreamId: lastStreamId as Http2StreamId,
+                errorCode: errorCode as number,
+                debugData: debugData as Bytes,
+            };
             this.closing = true;
         });
-        this.manager.on("streamClosed", (streamId: Http2StreamId) => {
-            this.onStreamClosed(streamId);
+        this.manager.on("streamClosed", (streamId: unknown) => {
+            this.onStreamClosed(streamId as Http2StreamId);
         });
 
         // Fire-and-forget the read loop; it runs until the transport closes.
@@ -445,7 +454,10 @@ export async function connectHttp2(options: Http2Options): Promise<Http2Connecti
         });
     };
 
-    const manager = createStreamManager(sendFrame);
+    if (options.events === undefined) {
+        throw new Error("connectHttp2 requires an injected EventProvider (options.events)");
+    }
+    const manager = createStreamManager(sendFrame, options.events);
     const conn = new Http2ConnectionImpl(id, options, manager, sendFrame, provider);
 
     // Write the client connection preface (RFC 7540 §3.5):

@@ -14,6 +14,7 @@
 
 import { describe, expect, it } from "vitest";
 import { createStreamManager } from "../src/stream/stream.js";
+import { createMockEventProvider } from "./test-helpers.js";
 import type { Frame, Http2Response, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
 import { encodeHeaders } from "../src/hpack/hpack.js";
@@ -43,7 +44,7 @@ class FrameCapture {
 describe("parseStatus edge cases", () => {
     it("defaults to 200 when no `:status` pseudo-header is present", async () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         const stream = mgr.openStream();
 
         const done = new Promise<number>((resolve, reject) =>
@@ -66,7 +67,7 @@ describe("parseStatus edge cases", () => {
 
     it("falls back to 200 when `:status` is non-numeric", async () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         const stream = mgr.openStream();
 
         const done = new Promise<number>((resolve, reject) =>
@@ -92,7 +93,7 @@ describe("parseStatus edge cases", () => {
 describe("transitionOnEndStream", () => {
     it("moves local_half_closed -> closed on END_STREAM", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         const stream = mgr.openStream();
         // The manager never naturally enters local_half_closed (no sender sets it),
         // so drive the transition directly by mutating the public state field.
@@ -111,7 +112,7 @@ describe("transitionOnEndStream", () => {
 
     it("moves remote_reserved -> closed on END_STREAM", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         const stream = mgr.openStream();
         stream.state = { state: "remote_reserved" };
 
@@ -129,7 +130,7 @@ describe("transitionOnEndStream", () => {
 describe("unknown-stream guards (no throw, no frames)", () => {
     it("ignores DATA on an unknown stream", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         expect(() =>
             mgr.dispatch({
                 type: FrameType.DATA,
@@ -144,7 +145,7 @@ describe("unknown-stream guards (no throw, no frames)", () => {
 
     it("ignores HEADERS on an unknown stream", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         expect(() =>
             mgr.dispatch({
                 type: FrameType.HEADERS,
@@ -160,7 +161,7 @@ describe("unknown-stream guards (no throw, no frames)", () => {
 
     it("ignores RST_STREAM on an unknown stream", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         expect(() =>
             mgr.dispatch({
                 type: FrameType.RST_STREAM,
@@ -173,7 +174,7 @@ describe("unknown-stream guards (no throw, no frames)", () => {
 
     it("ignores WINDOW_UPDATE on an unknown stream", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         expect(() =>
             mgr.dispatch({
                 type: FrameType.WINDOW_UPDATE,
@@ -186,7 +187,7 @@ describe("unknown-stream guards (no throw, no frames)", () => {
 
     it("ignores CONTINUATION on an unknown stream", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         expect(() =>
             mgr.dispatch({
                 type: FrameType.CONTINUATION,
@@ -200,7 +201,7 @@ describe("unknown-stream guards (no throw, no frames)", () => {
 
     it("expectResponse on an unknown stream rejects with RstStreamError", async () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         const done = new Promise<Error>((resolve, reject) =>
             mgr.expectResponse(ID(999), () => reject(new Error("no")), resolve),
         );
@@ -211,14 +212,14 @@ describe("unknown-stream guards (no throw, no frames)", () => {
 
     it("sendData on an unknown stream is a no-op", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         expect(() => mgr.sendData(ID(999), text.encode("x"), true)).not.toThrow();
         expect(cap.count(FrameType.DATA)).toBe(0);
     });
 
     it("applyWindowUpdate on an unknown stream is a no-op", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         expect(() => mgr.applyWindowUpdate(ID(999), 1000)).not.toThrow();
     });
 });
@@ -226,7 +227,7 @@ describe("unknown-stream guards (no throw, no frames)", () => {
 describe("rejectStream with no resolver", () => {
     it("RST on a stream with no registered resolver finalizes and removes the stream", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         const stream = mgr.openStream();
         // No expectResponse() call — stream.reject is undefined.
 
@@ -262,7 +263,7 @@ describe("rejectStream with no resolver", () => {
 describe("CONTINUATION header-block reassembly", () => {
     it("buffers HEADERS without END_HEADERS and decodes after CONTINUATION", async () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         const stream = mgr.openStream();
 
         const done = new Promise<number>((resolve, reject) =>
@@ -302,7 +303,7 @@ describe("CONTINUATION header-block reassembly", () => {
     });
 
     it("buffers multiple CONTINUATION frames until END_HEADERS arrives", async () => {
-        const mgr = createStreamManager(() => undefined);
+        const mgr = createStreamManager(() => undefined, createMockEventProvider());
         const stream = mgr.openStream();
         const done = new Promise<number>((resolve, reject) =>
             mgr.expectResponse(stream.id, (res) => resolve(res.statusCode), reject),
@@ -348,7 +349,7 @@ describe("CONTINUATION header-block reassembly", () => {
 
 describe("maybeResolveResponse with no registered resolver", () => {
     it("completes without throwing when endStream arrives but nobody is waiting", () => {
-        const mgr = createStreamManager(() => undefined);
+        const mgr = createStreamManager(() => undefined, createMockEventProvider());
         const stream = mgr.openStream();
         // No expectResponse() — stream.resolve is undefined.
 
@@ -378,7 +379,7 @@ describe("maybeResolveResponse with no registered resolver", () => {
 
 describe("dispatch exhaustiveness guard", () => {
     it("silently ignores a frame type outside the known 0x0-0x9 range (RFC 7540 §4.1)", () => {
-        const mgr = createStreamManager(() => undefined);
+        const mgr = createStreamManager(() => undefined, createMockEventProvider());
         // Unknown frame types MUST be ignored per RFC 7540 §4.1 — no throw.
         expect(() =>
             mgr.dispatch({ type: 0xff, flags: 0, streamId: ID(1) } as never),
@@ -389,7 +390,7 @@ describe("dispatch exhaustiveness guard", () => {
 describe("padded DATA", () => {
     it("strips the pad-length prefix and trailing padding, keeps flow control honest", async () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         const stream = mgr.openStream();
 
         const done = new Promise<{ status: number; body: Uint8Array }>((resolve, reject) =>
@@ -432,7 +433,7 @@ describe("padded DATA", () => {
 describe("server-push response resolution", () => {
     it("emits pushResponse and stores the response when a push stream completes", async () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         const client = mgr.openStream(); // stream 1
 
         // PUSH_PROMISE promising stream 2, with END_HEADERS (request headers).
@@ -489,7 +490,7 @@ describe("server-push response resolution", () => {
 
     it("emits `push` once on the promised stream when PUSH_PROMISE headers arrive via CONTINUATION (client-stream id)", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         const client = mgr.openStream();
 
         const block = encodeHeaders(new Map([["x-push", "v"]]));
@@ -535,7 +536,7 @@ describe("server-push response resolution", () => {
 describe("PRIORITY dispatch", () => {
     it("accepts a PRIORITY frame without throwing or emitting frames", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         expect(() =>
             mgr.dispatch({
                 type: FrameType.PRIORITY,
@@ -554,7 +555,7 @@ describe("PRIORITY dispatch", () => {
 describe("abortAll", () => {
     it("rejects every pending stream with the given error and clears the table", async () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
         const a = mgr.openStream();
         const b = mgr.openStream();
 
