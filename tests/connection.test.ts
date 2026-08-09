@@ -10,10 +10,9 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { crypto } from "@browsercore/crypto";
 import { connectHttp2 } from "../src/connection.js";
 import { createFakeTransportPair, FakeTransport } from "./fake-transport.js";
-import { createMockEventProvider } from "./test-helpers.js";
+import { createMockCryptoProvider, createMockEventProvider } from "./test-helpers.js";
 import { parseFrame, serializeFrame, FRAME_HEADER_LENGTH } from "../src/frame/frame.js";
 import { encodeHeaders, decodeHeaders } from "../src/hpack/hpack.js";
 import type { Frame, Http2StreamId } from "../src/types.js";
@@ -23,6 +22,13 @@ import { GoawayReceivedError } from "../src/errors.js";
 const ID = (n: number): Http2StreamId => n as Http2StreamId;
 const text = new TextEncoder();
 const decode = new TextDecoder();
+
+/**
+ * CryptoProvider used by every test in this file. http2 touches crypto ONLY for
+ * PING opaque-data randomness; the mock backs `randomBytes` with the platform
+ * Web Crypto API and leaves the rest unimplemented.
+ */
+const crypto = createMockCryptoProvider();
 
 /** Read one full frame from the raw byte queue the server side receives. */
 async function readFrame(server: FakeTransport): Promise<Frame> {

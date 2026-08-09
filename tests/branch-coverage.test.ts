@@ -13,7 +13,6 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { crypto } from "@browsercore/crypto";
 import {
     huffmanEncode,
     huffmanDecode,
@@ -30,7 +29,7 @@ import type { Frame, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
 import { Http2ConnectionImpl, connectHttp2 } from "../src/connection.js";
 import { createStreamManager } from "../src/stream/stream.js";
-import { createMockEventProvider } from "./test-helpers.js";
+import { createMockCryptoProvider, createMockEventProvider } from "./test-helpers.js";
 import { createFakeTransportPair, FakeTransport } from "./fake-transport.js";
 import { GoawayReceivedError, ConnectionClosedError } from "../src/errors.js";
 import type { Http2ConnectionId } from "../src/types.js";
@@ -62,6 +61,13 @@ async function readFrame(t: FakeTransport): Promise<Frame> {
 
 const ID = (n: number): Http2StreamId => n as Http2StreamId;
 const CONN_ID = "branch" as Http2ConnectionId;
+
+/**
+ * CryptoProvider used by every test in this file. http2 touches crypto ONLY for
+ * PING opaque-data randomness; the mock backs `randomBytes` with the platform
+ * Web Crypto API and leaves the rest unimplemented.
+ */
+const crypto = createMockCryptoProvider();
 
 // ---------------------------------------------------------------------------
 // hpack/string.ts — Huffman error paths + encodeLatin1 + decodeString
