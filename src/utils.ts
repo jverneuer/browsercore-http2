@@ -28,3 +28,19 @@ export function assertNever(x: never): never {
 export function createId(prefix: string, clock: Clock = systemClock): string {
     return `${prefix}_${clock.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
 }
+
+/**
+ * Generate a GREASE value for HTTP/2 (RFC 8701).
+ *
+ * Returns a 16-bit integer matching the `0x?a?a` pattern used for GREASE
+ * SETTINGS ids, unknown frame types, and error codes. The high nibble (0–F) is
+ * randomised per call so the value is unpredictable across connections; pass an
+ * explicit `nibble` for deterministic tests.
+ *
+ * Example values: `0x0a0a`, `0x1a1a`, …, `0xfafa`.
+ */
+export function generateHttp2GreaseValue(nibble?: number): number {
+    const n = nibble ?? Math.floor(Math.random() * 16);
+    const byte = ((n & 0xf) << 4) | 0x0a;
+    return (byte << 8) | byte;
+}

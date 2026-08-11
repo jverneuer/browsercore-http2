@@ -63,6 +63,39 @@ await conn.close();
 | `FlowControlError` | class | Send exceeded window |
 | `FrameParseError` | class | Malformed frame |
 | `SettingsAckTimeoutError` | class | SETTINGS ACK timed out |
+| `HpackEncoderOptions` | interface | HPACK encoder config (table size, Huffman toggle) |
+| `EncodeHeadersOptions` | interface | `encodeHeaders()` options (indexing, Huffman, table size) |
+| `PriorityFrameSpec` | interface | PRIORITY frame spec for preface sequencing |
+| `generateHttp2GreaseValue()` | function | RFC 8701 GREASE value generator (0x?a?a pattern) |
+
+## Browser impersonation
+
+`connectHttp2()` accepts impersonation options that control every ordering
+vector in the HTTP/2 wire fingerprint:
+
+```ts
+await connectHttp2({
+    transport,
+    crypto,
+    // SETTINGS frame: explicit id order + optional GREASE
+    settingsOrder: [0x1, 0x3, 0x4, 0x5, 0x6],
+    settingsGrease: true,
+    // Connection-level WINDOW_UPDATE (Chrome sends one early)
+    connectionWindowUpdate: 1_572_864,
+    // PRIORITY frames for dependency tree setup
+    priorityFrames: [
+        { streamId: ID(3), streamDependency: ID(0), exclusive: false, weight: 255 },
+    ],
+    // Pseudo-header order in request HEADERS frames
+    pseudoHeaderOrder: [":method", ":authority", ":scheme", ":path"],
+    // Regular header order in request HEADERS frames
+    headerOrder: ["cookie", "accept", "user-agent"],
+    // HPACK encoder configuration
+    hpackMaxTableSize: 4096,
+    hpackHuffman: true,
+    hpackIndexing: false,
+});
+```
 
 ## Dependency graph
 

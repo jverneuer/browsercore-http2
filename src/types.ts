@@ -90,6 +90,19 @@ export interface SettingsFrame extends BaseFrame {
     /** `true` if the ACK flag (0x1) is set — payload must be empty. */
     readonly ack: boolean;
     readonly settings: Http2SettingsMap;
+    /**
+     * Explicit serialization order for the SETTINGS payload (impersonation).
+     * When present, settings are emitted in this id order — bypassing the
+     * ascending-sort that JavaScript applies to integer object keys. IDs not
+     * present in the map are skipped; IDs in the map but not in this array are
+     * appended afterwards. Absent → natural (sorted) key order.
+     */
+    readonly settingsOrder?: readonly number[];
+    /**
+     * When `true`, prepend a GREASE setting id (RFC 8701 0x?a?a pattern) with
+     * value 0 as the FIRST setting. Chrome does this in its connection preface.
+     */
+    readonly grease?: boolean;
 }
 
 export interface PushPromiseFrame extends BaseFrame {
@@ -137,6 +150,19 @@ export type Frame =
     | GoawayFrame
     | WindowUpdateFrame
     | ContinuationFrame;
+
+/**
+ * Specification for a PRIORITY frame sent during the connection preface.
+ *
+ * Mirrors {@link PriorityFrame} without the wire discriminants (`type`/`flags`),
+ * so callers can describe dependency-tree setup concisely in {@link Http2Options}.
+ */
+export interface PriorityFrameSpec {
+    readonly streamId: Http2StreamId;
+    readonly streamDependency: Http2StreamId;
+    readonly exclusive: boolean;
+    readonly weight: number;
+}
 
 /** Lifecycle state of an HTTP/2 stream. */
 export type StreamState =
@@ -255,6 +281,56 @@ export interface Http2Options {
      * `CryptoProvider` (e.g. the singleton exported by that package).
      */
     readonly crypto: CryptoProvider;
+
+    // --- impersonation: connection preface shape ---------------------------
+
+    /**
+     * Explicit serialization order for the preface SETTINGS frame. Controls the
+     * on-wire byte order of setting ids — critical for fingerprint fidelity.
+     * Absent → natural (sorted) key order.
+     */
+    readonly settingsOrder?: readonly number[];
+    /** Insert a GREASE setting id first in the preface SETTINGS frame. */
+    readonly settingsGrease?: boolean;
+    /**
+     * Connection-level WINDOW_UPDATE increment to send after the preface
+     * SETTINGS. Chrome advertises a larger connection window (e.g. 1 572 864
+     * − 65 535) early to avoid flow-control stalls.
+     */
+    readonly connectionWindowUpdate?: number;
+    /**
+     * PRIORITY frames to send after the preface SETTINGS + WINDOW_UPDATE but
+     * before the read loop starts. Chrome sends several to set up its
+     * dependency tree (e.g. stream 0 weight 256, stream 3 dependent on 0).
+     */
+    readonly priorityFrames?: readonly PriorityFrameSpec[];
+
+    // --- impersonation: header block shape --------------------------------
+
+    /**
+     * Order of pseudo-headers (`:method`, `:path`, `:scheme`, `:authority`) in
+     * request HEADERS frames. Absent → the RFC 7540 §8.1.2 default order
+     * (`:method :scheme :authority :path`).
+     */
+    readonly pseudoHeaderOrder?: readonly string[];
+    /**
+     * Order of regular (non-pseudo) headers in request HEADERS frames. Headers
+     * named here are emitted first (in this order); any remaining headers
+     * follow in their original insertion order. Absent → insertion order.
+     */
+    readonly headerOrder?: readonly string[];
+
+    // --- impersonation: HPACK encoder configuration -----------------------
+
+    /** Max HPACK dynamic table size for the request encoder. Default 4096. */
+    readonly hpackMaxTableSize?: number;
+    /** Whether to Huffman-encode header string literals. Default true. */
+    readonly hpackHuffman?: boolean;
+    /**
+     * Whether to use incremental indexing for regular (non-pseudo) headers.
+     * Default false (safe default — no-indexing literals).
+     */
+    readonly hpackIndexing?: boolean;
     /**
      * Event provider for connection-level signals (SETTINGS ACK, PING ACK,
      * GOAWAY, stream lifecycle). Injected by the application entrypoint

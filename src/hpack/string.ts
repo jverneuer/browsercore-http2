@@ -178,6 +178,19 @@ export function encodeStringHuffman(value: string): number[] {
 }
 
 /**
+ * Encode a string WITHOUT Huffman coding. Returns the octets including the
+ * length prefix (high bit clear — literal octets). Used when the encoder is
+ * configured with `useHuffman: false` to produce a different on-wire
+ * fingerprint from Huffman-compressed strings.
+ */
+export function encodeStringLiteral(value: string): number[] {
+    const raw = encodeLatin1(value);
+    const lengthOctets = encodeInteger(raw.length, 7);
+    // High bit stays 0 (no Huffman flag) — encodeInteger leaves it clear.
+    return [...lengthOctets, ...Array.from(raw)];
+}
+
+/**
  * Lower-case a header name (§8.1.2 — header field names are case-insensitive and
  * HTTP/2 lower-cases them on the wire). Values are preserved verbatim.
  */

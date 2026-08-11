@@ -94,6 +94,19 @@ export class Http2ConnectionImpl implements Http2Connection {
     /** Resolvers waiting on a concurrency slot to free. */
     private readonly slotWaiters: Array<() => void> = [];
 
+    // --- impersonation configuration (from Http2Options) -------------------
+
+    /** Pseudo-header serialization order, or undefined for the default. */
+    private readonly pseudoHeaderOrder: readonly string[] | undefined;
+    /** Regular header serialization order, or undefined for insertion order. */
+    private readonly headerOrder: readonly string[] | undefined;
+    /** Whether to Huffman-encode request header strings. */
+    private readonly hpackHuffman: boolean | undefined;
+    /** Whether to use incremental indexing for regular headers. */
+    private readonly hpackIndexing: boolean | undefined;
+    /** Max HPACK dynamic table size for the request encoder. */
+    private readonly hpackMaxTableSize: number | undefined;
+
     public constructor(
         id: Http2ConnectionId,
         options: Http2Options,
@@ -108,6 +121,11 @@ export class Http2ConnectionImpl implements Http2Connection {
         this.manager = manager;
         this.sendFrame = sendFrame;
         this.provider = provider;
+        this.pseudoHeaderOrder = options.pseudoHeaderOrder;
+        this.headerOrder = options.headerOrder;
+        this.hpackHuffman = options.hpackHuffman;
+        this.hpackIndexing = options.hpackIndexing;
+        this.hpackMaxTableSize = options.hpackMaxTableSize;
     }
 
     // --- public Http2Connection surface ----------------------------------------
@@ -218,14 +236,12 @@ export class Http2ConnectionImpl implements Http2Connection {
 
     /** Encode request pseudo-headers + headers and send a HEADERS frame. */
     private sendHeaders(streamId: Http2StreamId, req: Http2Request, endStream: boolean): void {
-        const headers = new Map<string, string>([
-            [":method", req.method],
-            [":scheme", req.scheme],
-            [":authority", req.authority],
-            [":path", req.path],
-            ...Array.from(req.headers.entries()),
-        ]);
-        const encoded = encodeHeaders(headers);
+        const headers = this.buildRequestHeaders(req);
+        const encoded = encodeHeaders(headers, {
+            indexing: this.hpackIndexing,
+            useHuffman: this.hpackHuffman,
+            maxTableSize: this.hpackMaxTableSize,
+        });
         // END_HEADERS (0x4) always set; END_STREAM (0x1) when there is no body.
         const flags = 0x4 | (endStream ? 0x1 : 0);
         this.sendFrame({
@@ -237,6 +253,73 @@ export class Http2ConnectionImpl implements Http2Connection {
             padded: false,
             payload: encoded,
         });
+    }
+
+    /**
+     * Build the ordered request header map.
+     *
+     * Pseudo-headers are inserted in the order specified by
+     * {@link Http2Options.pseudoHeaderOrder} (or the default RFC 7540 §8.1.2
+     * order). Regular headers follow, optionally reordered by
+     * {@link Http2Options.headerOrder}. Any headers not covered by the explicit
+     * order are appended in their original insertion order.
+     */
+    private buildRequestHeaders(req: Http2Request): Map<string, string> {
+        const headers = new Map<string, string>();
+
+        // --- pseudo-headers (order matters for JA4 fingerprinting) ----------
+
+        const pseudoSources: ReadonlyArray<readonly [string, string]> = [
+            [":method", req.method],
+            [":scheme", req.scheme],
+            [":authority", req.authority],
+            [":path", req.path],
+        ];
+        const pseudoOrder = this.pseudoHeaderOrder;
+        if (pseudoOrder === undefined) {
+            for (const [name, value] of pseudoSources) {
+                headers.set(name, value);
+            }
+        } else {
+            for (const name of pseudoOrder) {
+                const src = pseudoSources.find(([n]) => n === name);
+                if (src !== undefined) {
+                    headers.set(src[0], src[1]);
+                }
+            }
+            // Append any pseudo-headers not listed in the explicit order.
+            for (const [name, value] of pseudoSources) {
+                if (!pseudoOrder.includes(name) && !headers.has(name)) {
+                    headers.set(name, value);
+                }
+            }
+        }
+
+        // --- regular headers ------------------------------------------------
+
+        const headerOrder = this.headerOrder;
+        if (headerOrder === undefined) {
+            for (const [name, value] of req.headers.entries()) {
+                headers.set(name, value);
+            }
+        } else {
+            const seen = new Set<string>();
+            for (const name of headerOrder) {
+                const value = req.headers.get(name);
+                if (value !== undefined) {
+                    headers.set(name, value);
+                    seen.add(name);
+                }
+            }
+            // Append remaining headers not covered by the explicit order.
+            for (const [name, value] of req.headers.entries()) {
+                if (!seen.has(name)) {
+                    headers.set(name, value);
+                }
+            }
+        }
+
+        return headers;
     }
 
     // --- concurrency slot pool -------------------------------------------------
@@ -469,7 +552,36 @@ export async function connectHttp2(options: Http2Options): Promise<Http2Connecti
         streamId: 0 as Http2StreamId,
         ack: false,
         settings: options.initialSettings ?? {},
+        ...(options.settingsOrder === undefined ? {} : { settingsOrder: options.settingsOrder }),
+        ...(options.settingsGrease === true ? { grease: true } : {}),
     });
+
+    // Optional: connection-level WINDOW_UPDATE (e.g. Chrome advertises a
+    // larger connection window early to avoid flow-control stalls).
+    if (options.connectionWindowUpdate !== undefined) {
+        sendFrame({
+            type: FrameType.WINDOW_UPDATE,
+            flags: 0,
+            streamId: 0 as Http2StreamId,
+            windowSizeIncrement: options.connectionWindowUpdate,
+        });
+    }
+
+    // Optional: PRIORITY frames (dependency tree setup). Sent after SETTINGS +
+    // WINDOW_UPDATE but before the read loop starts, matching the Chrome
+    // connection preface sequence.
+    if (options.priorityFrames !== undefined) {
+        for (const spec of options.priorityFrames) {
+            sendFrame({
+                type: FrameType.PRIORITY,
+                flags: 0,
+                streamId: spec.streamId,
+                exclusive: spec.exclusive,
+                streamDependency: spec.streamDependency,
+                weight: spec.weight,
+            });
+        }
+    }
 
     // Start consuming frames BEFORE awaiting the ACK so we don't deadlock if
     // the peer's SETTINGS + ACK arrive back-to-back.

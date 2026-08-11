@@ -6,8 +6,8 @@
  * (31 bits).
  */
 
-import { FrameType, type Frame, type Http2StreamId } from "../types.js";
-import { assertNever } from "../utils.js";
+import { FrameType, type Frame, type Http2SettingsKey, type Http2SettingsMap, type Http2StreamId, type SettingsFrame } from "../types.js";
+import { assertNever, generateHttp2GreaseValue } from "../utils.js";
 import { FrameParseError } from "../errors.js";
 import { validateFrameType } from "../schemas.js";
 
@@ -72,14 +72,16 @@ function serializePayload(frame: Frame): Uint8Array {
             return out;
         }
         case FrameType.SETTINGS: {
-            // Each setting is 6 bytes: 2-byte id, 4-byte value. Filter out
-            // undefined entries (Partial Record) before serializing.
-            const entries = Object.entries(frame.settings)
-                .filter((entry): entry is [string, number] => entry[1] !== undefined);
+            // SETTINGS ACK frames MUST have an empty payload (RFC 7540 §6.5).
+            if (frame.ack) {
+                return new Uint8Array(0);
+            }
+            // Build the ordered list of [id, value] pairs to serialize.
+            const entries = collectSettingsEntries(frame);
             const out = new Uint8Array(entries.length * 6);
             const view = new DataView(out.buffer);
-            entries.forEach(([key, value], i) => {
-                view.setUint16(i * 6, Number(key));
+            entries.forEach(([id, value], i) => {
+                view.setUint16(i * 6, id);
                 view.setUint32(i * 6 + 2, Math.trunc(value));
             });
             return out;
@@ -106,6 +108,55 @@ function serializePayload(frame: Frame): Uint8Array {
         default:
             return assertNever(frame);
     }
+}
+
+/**
+ * Build the ordered `[id, value]` list for a SETTINGS payload.
+ *
+ * Order precedence:
+ *   1. GREASE setting (when `grease` is true) — always first (Chrome pattern).
+ *   2. Settings listed in `settingsOrder` — emitted in that order.
+ *   3. Remaining settings not in `settingsOrder` — appended in natural key order.
+ *
+ * When `settingsOrder` is absent, all settings are emitted in natural
+ * (ascending-sorted) key order — matching pre-impersonation behaviour.
+ */
+function collectSettingsEntries(frame: SettingsFrame): Array<[number, number]> {
+    const entries: Array<[number, number]> = [];
+
+    // GREASE goes first (RFC 8701 — Chrome inserts it before real settings).
+    if (frame.grease === true) {
+        entries.push([generateHttp2GreaseValue(), 0]);
+    }
+
+    const order = frame.settingsOrder;
+    const settings = frame.settings as Http2SettingsMap;
+
+    if (order === undefined) {
+        // No explicit order — natural key order (ascending for integer keys).
+        for (const [key, value] of Object.entries(settings)) {
+            if (value !== undefined) {
+                entries.push([Number(key), value]);
+            }
+        }
+    } else {
+        // Explicit order: emit each listed id that has a defined value.
+        for (const id of order) {
+            const value = settings[id as Http2SettingsKey];
+            if (value !== undefined) {
+                entries.push([id, value]);
+            }
+        }
+        // Append any settings not covered by the explicit order.
+        const covered = new Set(order);
+        for (const [key, value] of Object.entries(settings)) {
+            if (value !== undefined && !covered.has(Number(key))) {
+                entries.push([Number(key), value]);
+            }
+        }
+    }
+
+    return entries;
 }
 
 /**

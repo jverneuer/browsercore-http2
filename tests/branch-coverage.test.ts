@@ -13,6 +13,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { testCrypto as crypto } from "./fake-transport.js";
 import {
     huffmanEncode,
     huffmanDecode,
@@ -29,10 +30,10 @@ import type { Frame, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
 import { Http2ConnectionImpl, connectHttp2 } from "../src/connection.js";
 import { createStreamManager } from "../src/stream/stream.js";
-import { createMockCryptoProvider, createMockEventProvider } from "./test-helpers.js";
 import { createFakeTransportPair, FakeTransport } from "./fake-transport.js";
 import { GoawayReceivedError, ConnectionClosedError } from "../src/errors.js";
 import type { Http2ConnectionId } from "../src/types.js";
+import { createMockEventProvider } from "./test-helpers.js";
 
 /** Concatenate two byte arrays. */
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
@@ -61,13 +62,6 @@ async function readFrame(t: FakeTransport): Promise<Frame> {
 
 const ID = (n: number): Http2StreamId => n as Http2StreamId;
 const CONN_ID = "branch" as Http2ConnectionId;
-
-/**
- * CryptoProvider used by every test in this file. http2 touches crypto ONLY for
- * PING opaque-data randomness; the mock backs `randomBytes` with the platform
- * Web Crypto API and leaves the rest unimplemented.
- */
-const crypto = createMockCryptoProvider();
 
 // ---------------------------------------------------------------------------
 // hpack/string.ts — Huffman error paths + encodeLatin1 + decodeString
@@ -1611,7 +1605,7 @@ describe("hpack/encoder.ts — name index conditional branches", () => {
         // When nameIndex > 0, the encoder emits only the index (no name string).
         // First encode a header to populate the dynamic table, then encode
         // the same header again — the second time it should use an index.
-        const enc = new HpackEncoder({ tableSize: 4096 });
+        const enc = new HpackEncoder({ maxTableSize: 4096 });
         // First call populates the dynamic table
         enc.encode([{ name: "x-custom", value: "val1", indexing: true }]);
         // Second call: name is now in the dynamic table, so nameIndex > 0
@@ -1621,7 +1615,7 @@ describe("hpack/encoder.ts — name index conditional branches", () => {
 
     it("emitLiteral with static-table name index", () => {
         // Covers the branch where name matches a static-table entry (index 1-61)
-        const enc = new HpackEncoder({ tableSize: 4096 });
+        const enc = new HpackEncoder({ maxTableSize: 4096 });
         // :method is in the static table (index 2)
         const out = enc.encode([{ name: ":method", value: "GET", indexing: false }]);
         expect(out.length).toBeGreaterThan(0);

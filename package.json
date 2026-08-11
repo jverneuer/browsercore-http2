@@ -1,7 +1,7 @@
 {
     "name": "@browsercore/http2",
-    "version": "0.2.3",
-    "description": "HTTP/2 framing over any duplex byte stream. No knowledge of TLS or TCP \u2014 only HPACK + framing.",
+    "version": "0.2.5",
+    "description": "HTTP/2 framing over any duplex byte stream. No knowledge of TLS or TCP — only HPACK + framing.",
     "repository": {
         "type": "git",
         "url": "https://github.com/jverneuer/browsercore-http2.git"
@@ -39,17 +39,17 @@
         "test": "vitest run"
     },
     "devDependencies": {
-        "@browsercore/crypto": "0.2.2",
+        "@browsercore/crypto": "0.2.1",
         "@types/node": "^26.1.2",
         "@vitest/coverage-v8": "^4.1.10",
-        "typescript": "^7.0.0",
-        "vitest": "^4.1.10",
         "oxlint": "^1.76.0",
-        "oxlint-tsgolint": "7.0.2001"
+        "oxlint-tsgolint": "7.0.2001",
+        "typescript": "^7.0.0",
+        "vitest": "^4.1.10"
     },
     "dependencies": {
-        "@browsercore/contracts": "0.2.2",
-        "@browsercore/transport": "0.2.5",
+        "@browsercore/contracts": "^0.2.3",
+        "@browsercore/transport": "0.2.4",
         "zod": "^4.4.3"
     },
     "engines": {

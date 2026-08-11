@@ -34,6 +34,8 @@ export {
     encodeHeaders,
 } from "./hpack/hpack.js";
 export type { HeaderField, HeaderBlock } from "./hpack/hpack.js";
+export type { HpackEncoderOptions } from "./hpack/encoder.js";
+export type { EncodeHeadersOptions } from "./hpack/helpers.js";
 
 export { createStreamManager } from "./stream/stream.js";
 export type { Http2Stream, StreamManager } from "./stream/stream.js";
@@ -60,6 +62,7 @@ export {
     type Http2StreamId,
     type PingFrame,
     type PriorityFrame,
+    type PriorityFrameSpec,
     type PushPromiseFrame,
     type RstStreamFrame,
     type SettingsFrame,
@@ -68,4 +71,4 @@ export {
     type WindowUpdateFrame,
 } from "./types.js";
 
-export { assertNever, createId } from "./utils.js";
+export { assertNever, createId, generateHttp2GreaseValue } from "./utils.js";

@@ -17,26 +17,20 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { testCrypto as crypto } from "./fake-transport.js";
 import { Http2ConnectionImpl, connectHttp2 } from "../src/connection.js";
 import { createStreamManager } from "../src/stream/stream.js";
-import { createMockCryptoProvider, createMockEventProvider } from "./test-helpers.js";
 import { createFakeTransportPair, FakeTransport } from "./fake-transport.js";
 import { serializeFrame, parseFrame, parseFrameHeader, FRAME_HEADER_LENGTH } from "../src/frame/frame.js";
 import type { Frame, Http2Request, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
 import { ConnectionClosedError, GoawayReceivedError, SettingsAckTimeoutError } from "../src/errors.js";
 import type { Http2ConnectionId } from "../src/types.js";
+import { createMockEventProvider } from "./test-helpers.js";
 
 const ID = (n: number): Http2StreamId => n as Http2StreamId;
 const CONN_ID = "unit" as Http2ConnectionId;
 const text = new TextEncoder();
-
-/**
- * CryptoProvider used by every test in this file. http2 touches crypto ONLY for
- * PING opaque-data randomness; the mock backs `randomBytes` with the platform
- * Web Crypto API and leaves the rest unimplemented.
- */
-const crypto = createMockCryptoProvider();
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
     const out = new Uint8Array(a.length + b.length);
