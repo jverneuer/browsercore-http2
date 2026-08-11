@@ -77,7 +77,7 @@ function makeConn(): {
     const sendFrame = (f: Frame): void => {
         frames.push(f);
     };
-    const manager = createStreamManager(sendFrame, createMockEventProvider());
+    const manager = createStreamManager(sendFrame);
     const conn = new Http2ConnectionImpl(CONN_ID, { transport, events: createMockEventProvider() }, manager, sendFrame, crypto);
     return { conn, transport, frames, manager };
 }
@@ -124,7 +124,7 @@ describe("close() behavior", () => {
 
     it("swallows a GOAWAY write failure on graceful close", async () => {
         const transport = new FakeTransport("c");
-        const manager = createStreamManager(() => undefined, createMockEventProvider());
+        const manager = createStreamManager(() => undefined);
         // sendFrame throws only for the GOAWAY close() emits.
         const sendFrame = (f: Frame): void => {
             if (f.type === FrameType.GOAWAY) throw new Error("write broken");
@@ -497,7 +497,7 @@ describe("slot release on stream completion", () => {
         const sendFrame = (f: Frame): void => {
             frames.push(f);
         };
-        const manager = createStreamManager(sendFrame, createMockEventProvider());
+        const manager = createStreamManager(sendFrame);
         const conn = new Http2ConnectionImpl(CONN_ID, { transport, events: createMockEventProvider() }, manager, sendFrame, crypto);
         manager.dispatch({
             type: FrameType.SETTINGS,
@@ -554,7 +554,7 @@ describe("read-loop frame reassembly across fragmented reads", () => {
         const sendFrame = (f: Frame): void => {
             frames.push(f);
         };
-        const manager = createStreamManager(sendFrame, createMockEventProvider());
+        const manager = createStreamManager(sendFrame);
         const conn = new Http2ConnectionImpl(CONN_ID, { transport: client, events: createMockEventProvider() }, manager, sendFrame, crypto);
         conn.startReadLoop(); // readLoop now blocked on transport.read()
 

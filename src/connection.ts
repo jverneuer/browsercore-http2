@@ -78,7 +78,7 @@ export class Http2ConnectionImpl implements Http2Connection {
     private readonly clock: Clock;
     /** Crypto provider for non-protocol randomness (e.g. PING opaque data). */
     private readonly provider: CryptoProvider;
-    /** Stream manager (emits connection-level signals via injected EventProvider). */
+    /** Stream manager (emits connection-level signals via its private internal EventEmitter). */
     private readonly manager: StreamManager & EventProvider;
     /** Serializes + writes a frame to the transport. */
     private readonly sendFrame: (frame: Frame) => void;
@@ -185,7 +185,7 @@ export class Http2ConnectionImpl implements Http2Connection {
             }
             // Resolve only on the ACK that echoes *our* opaque data. Late or
             // unrelated ACKs are ignored (the handler self-removes on match).
-            // The injected EventProvider types listeners as
+            // The manager's EventProvider surface types listeners as
             // `(...args: unknown[]) => void`, so the handler narrows the opaque
             // data from `unknown` before comparing.
             const handler = (acked: unknown): void => {
@@ -395,7 +395,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         // The manager emits connection-level signals we need to react to:
         //   - "goaway": stop accepting new work.
         //   - "streamClosed": free a concurrency slot.
-        // The injected EventProvider types listeners as
+        // The manager's EventProvider surface types listeners as
         // `(...args: unknown[]) => void`; narrow the args from `unknown` here.
         this.manager.on("goaway", (lastStreamId: unknown, errorCode: unknown, debugData: unknown) => {
             this.receivedGoaway = {
@@ -537,10 +537,7 @@ export async function connectHttp2(options: Http2Options): Promise<Http2Connecti
         });
     };
 
-    if (options.events === undefined) {
-        throw new Error("connectHttp2 requires an injected EventProvider (options.events)");
-    }
-    const manager = createStreamManager(sendFrame, options.events);
+    const manager = createStreamManager(sendFrame);
     const conn = new Http2ConnectionImpl(id, options, manager, sendFrame, provider);
 
     // Write the client connection preface (RFC 7540 §3.5):

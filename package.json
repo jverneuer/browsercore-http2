@@ -1,6 +1,6 @@
 {
     "name": "@browsercore/http2",
-    "version": "0.2.5",
+    "version": "0.2.6",
     "description": "HTTP/2 framing over any duplex byte stream. No knowledge of TLS or TCP — only HPACK + framing.",
     "repository": {
         "type": "git",
