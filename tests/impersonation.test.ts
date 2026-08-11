@@ -21,6 +21,7 @@ import { connectHttp2 } from "../src/connection.js";
 import { createFakeTransportPair, FakeTransport } from "./fake-transport.js";
 import { FrameType } from "../src/types.js";
 import type { Frame, Http2StreamId, Http2Request } from "../src/types.js";
+import { createMockEventProvider } from "./test-helpers.js";
 
 const ID = (n: number): Http2StreamId => n as Http2StreamId;
 
@@ -332,6 +333,7 @@ describe("Fix 3: Configurable pseudo-header order", () => {
         const conn = await connectHttp2({
             transport: client,
             crypto,
+            events: createMockEventProvider(),
             pseudoHeaderOrder: [":method", ":authority", ":scheme", ":path"],
         });
         await conn.request(sampleReq);
@@ -391,7 +393,7 @@ describe("Fix 3: Configurable pseudo-header order", () => {
             );
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         await conn.request(sampleReq);
         await conn.close();
         await serverDone;
@@ -461,6 +463,7 @@ describe("Fix 4: Connection preface sequencing", () => {
         const conn = await connectHttp2({
             transport: client,
             crypto,
+            events: createMockEventProvider(),
             connectionWindowUpdate: 1_572_864,
             settingsAckTimeoutMs: 1000,
         });
@@ -495,6 +498,7 @@ describe("Fix 4: Connection preface sequencing", () => {
         const conn = await connectHttp2({
             transport: client,
             crypto,
+            events: createMockEventProvider(),
             connectionWindowUpdate: 66_560,
             priorityFrames: [
                 { streamId: ID(3), streamDependency: ID(0), exclusive: false, weight: 255 },
@@ -528,6 +532,38 @@ describe("Fix 4: Connection preface sequencing", () => {
         const conn = await connectHttp2({
             transport: client,
             crypto,
+            events: createMockEventProvider(),
+            settingsAckTimeoutMs: 1000,
+        });
+        await conn.close();
+        await serverDone;
+    });
+
+    it("passes settingsOrder and settingsGrease through connectHttp2 to the preface SETTINGS", async () => {
+        // Exercises the connectHttp2 ternary branches for settingsOrder and
+        // settingsGrease — these options are read in connectHttp2 (not in the
+        // frame serializer) so they need an integration path to cover.
+        const { client, server } = createFakeTransportPair();
+        const serverDone = (async () => {
+            await server.read(); // PRI + SETTINGS
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0x1,
+                    streamId: ID(0),
+                    ack: true,
+                    settings: {},
+                }),
+            );
+        })();
+
+        const conn = await connectHttp2({
+            transport: client,
+            crypto,
+            events: createMockEventProvider(),
+            settingsOrder: [0x3, 0x5],
+            settingsGrease: true,
+            initialSettings: { [0x3]: 100, [0x5]: 16384 },
             settingsAckTimeoutMs: 1000,
         });
         await conn.close();
@@ -680,6 +716,7 @@ describe("Fix 7: Regular header order", () => {
         const conn = await connectHttp2({
             transport: client,
             crypto,
+            events: createMockEventProvider(),
             headerOrder: ["cookie", "accept", "user-agent"],
         });
         await conn.request({ ...sampleReq, headers: reqHeaders });
@@ -726,6 +763,7 @@ describe("Fix 7: Regular header order", () => {
         const conn = await connectHttp2({
             transport: client,
             crypto,
+            events: createMockEventProvider(),
             headerOrder: ["x-third"],
         });
         await conn.request({ ...sampleReq, headers: reqHeaders });
@@ -767,7 +805,7 @@ describe("Fix 7: Regular header order", () => {
             );
         })();
 
-        const conn = await connectHttp2({ transport: client, crypto });
+        const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         await conn.request({ ...sampleReq, headers: reqHeaders });
         await conn.close();
         await serverDone;
