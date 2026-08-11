@@ -258,7 +258,7 @@ describe("dynamic table eviction (RFC 7541 §4.3)", () => {
     it("evicts the oldest entry when the table exceeds its limit", () => {
         // Tiny table: each entry is name.length + value.length + 32 overhead.
         const dec = new HpackDecoder(64);
-        const enc = new HpackEncoder(64);
+        const enc = new HpackEncoder({ maxTableSize: 64 });
         const block: HeaderBlock = [
             { name: "x-first", value: "aaaaaaaa", indexing: true }, // 7+8+32 = 47
             { name: "x-second", value: "bbbbbbbbb", indexing: true }, // 7+9+32 = 48

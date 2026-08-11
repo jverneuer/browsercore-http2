@@ -16,9 +16,12 @@
 
 import type { HeaderField } from "./types.js";
 import { STATIC_TABLE } from "./static-table.js";
-import { encodeStringHuffman, normalizeName } from "./string.js";
+import { encodeStringHuffman, encodeStringLiteral, normalizeName } from "./string.js";
 import { encodeInteger } from "./integer.js";
 import { assertNever } from "../utils.js";
+
+/** The HPACK default dynamic table size (RFC 7541 Appendix A). */
+const HPACK_DEFAULT_TABLE_SIZE = 4096;
 
 /** Header-field representations emitted by the encoder (§6). */
 type EncodedHeader =
@@ -57,11 +60,37 @@ function findStaticNameIndex(name: string): number | undefined {
     return undefined;
 }
 
+/**
+ * Options for the HPACK encoder. All fields are optional and default to the
+ * HPACK standard values.
+ */
+export interface HpackEncoderOptions {
+    /**
+     * Max dynamic table size. Default 4096 (HPACK standard). When different
+     * from the default, a dynamic table size update is emitted at the start of
+     * the first header block (RFC 7541 §4.2).
+     */
+    readonly maxTableSize?: number | undefined;
+    /**
+     * Whether to Huffman-encode string literals. Default `true`. Set to `false`
+     * to emit raw string literals — produces a different on-wire fingerprint.
+     */
+    readonly useHuffman?: boolean | undefined;
+}
+
 export class HpackEncoder {
     private nextSizeUpdate: number | undefined;
+    private readonly maxTableSize: number;
+    private readonly useHuffman: boolean;
 
-    constructor(_maxTableSize: number = 4096) {
-        void _maxTableSize;
+    constructor(options: HpackEncoderOptions = {}) {
+        this.maxTableSize = options.maxTableSize ?? HPACK_DEFAULT_TABLE_SIZE;
+        this.useHuffman = options.useHuffman ?? true;
+        // Emit a dynamic table size update on the first header block when the
+        // configured size differs from the HPACK default (RFC 7541 §4.2).
+        if (this.maxTableSize !== HPACK_DEFAULT_TABLE_SIZE) {
+            this.nextSizeUpdate = this.maxTableSize;
+        }
     }
 
     /** Encode a header block into HPACK bytes. */
@@ -142,23 +171,31 @@ export class HpackEncoder {
         // name is new, the name string follows; the value string always does
         // (RFC 7541 §6.2.1).
         const indexOctets = encodeInteger(nameIndex, 6).map((o, i) => (i === 0 ? o | 0x40 : o));
-        const nameOctets = nameIndex === 0 && name !== undefined ? encodeStringHuffman(name) : [];
-        return [...indexOctets, ...nameOctets, ...encodeStringHuffman(value)];
+        const nameOctets = nameIndex === 0 && name !== undefined ? this.encodeString(name) : [];
+        return [...indexOctets, ...nameOctets, ...this.encodeString(value)];
     }
 
     private emitLiteralNoIndexing(nameIndex: number, name: string | undefined, value: string): number[] {
         // 0000_0000 prefix (0x00) + 4-bit name index (0 = new name) (§6.2.2). The
         // high flag bits are already zero in encodeInteger's output, so no OR.
         const indexOctets = encodeInteger(nameIndex, 4);
-        const nameOctets = nameIndex === 0 && name !== undefined ? encodeStringHuffman(name) : [];
-        return [...indexOctets, ...nameOctets, ...encodeStringHuffman(value)];
+        const nameOctets = nameIndex === 0 && name !== undefined ? this.encodeString(name) : [];
+        return [...indexOctets, ...nameOctets, ...this.encodeString(value)];
     }
 
     private emitLiteralNeverIndexed(nameIndex: number, name: string | undefined, value: string): number[] {
         // 0001_0000 prefix (0x10) + 4-bit name index (0 = new name) (§6.2.3).
         const indexOctets = encodeInteger(nameIndex, 4).map((o, i) => (i === 0 ? o | 0x10 : o));
-        const nameOctets = nameIndex === 0 && name !== undefined ? encodeStringHuffman(name) : [];
-        return [...indexOctets, ...nameOctets, ...encodeStringHuffman(value)];
+        const nameOctets = nameIndex === 0 && name !== undefined ? this.encodeString(name) : [];
+        return [...indexOctets, ...nameOctets, ...this.encodeString(value)];
+    }
+
+    /**
+     * Encode a header string value, respecting the `useHuffman` configuration.
+     * When Huffman is disabled, raw string literals are emitted (high bit 0).
+     */
+    private encodeString(value: string): number[] {
+        return this.useHuffman ? encodeStringHuffman(value) : encodeStringLiteral(value);
     }
 
     private encodeSizeUpdate(newLimit: number): number[] {
