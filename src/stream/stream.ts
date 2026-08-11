@@ -32,6 +32,7 @@
  *   majority of real servers.
  */
 
+import { EventEmitter } from "node:events";
 import type { EventProvider } from "@browsercore/contracts";
 import type {
     FlowControlWindow,
@@ -194,14 +195,16 @@ function parseStatus(headers: ReadonlyMap<string, string>): number {
 }
 
 // ---------------------------------------------------------------------------
-// EventProvider composition
+// Private internal EventEmitter
 // ---------------------------------------------------------------------------
 
-// The manager no longer constructs its own emitter. An {@link EventProvider} is
-// injected at creation time (see {@link createStreamManager}) and the manager
-// delegates its entire event surface to it. This decouples the stream manager
-// from `node:events` / `EventTarget` and keeps it runtime-agnostic (Node
-// EventEmitter, EventTarget, mock), exactly as the production `Transport` does.
+// The stream manager owns a private `node:events` EventEmitter for its
+// package-internal signals. These events ("settingsAck", "pingAck", "goaway",
+// "streamClosed", "push", "pushResponse") are consumed ONLY by the HTTP/2
+// connection in the same package — they must NOT flow through the shared
+// injected EventProvider, which would leak them to other packages and risk
+// event-forwarding loops. The shared provider remains reserved for public,
+// cross-package events.
 
 // ---------------------------------------------------------------------------
 // Module-scope shared helpers
@@ -253,18 +256,22 @@ function transitionOnEndStream(stream: ManagedStream): void {
 }
 
 // ---------------------------------------------------------------------------
-// Manager implementation — emits connection-level signals by delegating to the
-// injected EventProvider, so the connection can subscribe.
+// Manager implementation — emits connection-level signals on a private internal
+// EventEmitter so the connection (same package) can subscribe without leaking
+// internal events to the shared injected EventProvider.
 // ---------------------------------------------------------------------------
 
 /**
  * Create a stream manager. `sendFrame` is the callback for serialized frame I/O
  * — the manager never touches the transport directly.
  *
- * `events` is the injected {@link EventProvider} backend the manager emits
- * connection-level signals through. The returned object delegates its entire
- * event surface to that provider, emitting the signals the connection layer
- * reacts to:
+ * The manager creates a **private internal EventEmitter** for its
+ * connection-level signals. These events are package-internal (consumed only by
+ * the HTTP/2 connection in this package) and intentionally do NOT flow through
+ * the shared injected EventProvider — this prevents event pollution and
+ * forwarding loops with other packages. The returned object delegates its
+ * entire event surface to the private emitter, satisfying `EventProvider` so
+ * callers in the connection layer can subscribe normally:
  *   - `"settingsAck"`            — peer acknowledged our SETTINGS
  *   - `"pingAck", opaqueData`    — peer echoed a PING
  *   - `"goaway", {lastStreamId, errorCode, debugData}` — peer is going away
@@ -274,9 +281,13 @@ function transitionOnEndStream(stream: ManagedStream): void {
  */
 export function createStreamManager(
     sendFrame: (frame: Frame) => void,
-    events: EventProvider,
 ): StreamManager & EventProvider {
     const streams = new Map<Http2StreamId, ManagedStream>();
+
+    // Private internal emitter for package-internal connection-level signals.
+    // NOT the shared injected EventProvider — these events are consumed only by
+    // the HTTP/2 connection in this package.
+    const internalEmitter = new EventEmitter();
 
     /**
      * In-flight PUSH_PROMISE header blocks awaiting CONTINUATION. Keyed by the
@@ -300,7 +311,7 @@ export function createStreamManager(
     // --- frame I/O helpers -----------------------------------------------------
 
     function emitEvent(type: string, ...args: unknown[]): void {
-        events.emit(type, ...args);
+        internalEmitter.emit(type, ...args);
     }
 
     function sendSettingsAck(): void {
@@ -767,9 +778,9 @@ export function createStreamManager(
         streams.clear();
     }
 
-    // Delegate the event surface to the injected provider so the returned object
-    // satisfies the `StreamManager & EventProvider` intersection type and callers
-    // can subscribe to connection-level signals through a single handle.
+    // Delegate the event surface to the private internal emitter so the returned
+    // object satisfies the `StreamManager & EventProvider` intersection type and
+    // callers can subscribe to connection-level signals through a single handle.
     const manager = {
         openStream,
         dispatch,
@@ -781,25 +792,29 @@ export function createStreamManager(
             return maxConcurrentStreams;
         },
         on: (event: string | symbol, listener: (...args: unknown[]) => void) => {
-            events.on(event as string, listener);
+            internalEmitter.on(event, listener);
         },
         once: (event: string | symbol, listener: (...args: unknown[]) => void) => {
-            events.once(event as string, listener);
+            internalEmitter.once(event, listener);
         },
         off: (event: string | symbol, listener: (...args: unknown[]) => void) => {
-            events.off(event as string, listener);
+            internalEmitter.off(event, listener);
         },
         removeListener: (event: string | symbol, listener: (...args: unknown[]) => void) => {
-            events.removeListener(event as string, listener);
+            internalEmitter.removeListener(event, listener);
         },
         removeAllListeners: (event?: string | symbol) => {
-            events.removeAllListeners(event as string);
+            if (event === undefined) {
+                internalEmitter.removeAllListeners();
+            } else {
+                internalEmitter.removeAllListeners(event as string);
+            }
         },
         listenerCount: (event: string | symbol): number => {
-            return events.listenerCount(event as string);
+            return internalEmitter.listenerCount(event);
         },
         emit: (event: string | symbol, ...args: unknown[]) => {
-            return events.emit(event as string, ...args);
+            return internalEmitter.emit(event, ...args);
         },
     } as StreamManager & EventProvider;
 

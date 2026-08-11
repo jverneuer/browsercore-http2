@@ -9,7 +9,6 @@
 
 import { describe, expect, it } from "vitest";
 import { createStreamManager } from "../src/stream/stream.js";
-import { createMockEventProvider } from "./test-helpers.js";
 import type { Frame, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
 import { RstStreamError } from "../src/errors.js";
@@ -47,7 +46,7 @@ class FrameCapture {
 describe("stream manager — open + response", () => {
     it("opens a stream with an odd id and reports it", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
         const s = mgr.openStream();
         expect(s.id).toBe(ID(1));
         expect(s.state).toEqual({ state: "open" });
@@ -58,7 +57,7 @@ describe("stream manager — open + response", () => {
 
     it("resolves a request when response HEADERS + DATA END_STREAM arrive", async () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
         const stream = mgr.openStream();
 
         const resolved = new Promise<{
@@ -106,7 +105,7 @@ describe("stream manager — open + response", () => {
 
     it("resolves on a HEADERS frame that itself carries END_STREAM (no body)", async () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
         const stream = mgr.openStream();
 
         const done = new Promise<number>((resolve, reject) => {
@@ -128,7 +127,7 @@ describe("stream manager — open + response", () => {
 
     it("rejects with RstStreamError on RST_STREAM", async () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
         const stream = mgr.openStream();
 
         const done = new Promise<Error>((resolve, reject) => {
@@ -152,7 +151,7 @@ describe("stream manager — open + response", () => {
 describe("stream manager — SETTINGS / PING", () => {
     it("emits a SETTINGS ACK when it receives a (non-ack) SETTINGS frame", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
 
         mgr.dispatch({
             type: FrameType.SETTINGS,
@@ -171,7 +170,7 @@ describe("stream manager — SETTINGS / PING", () => {
 
     it("emits a PING ACK echoing the opaque data", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
         const opaque = 0x0102030405060708n;
 
         mgr.dispatch({
@@ -190,7 +189,7 @@ describe("stream manager — SETTINGS / PING", () => {
 
     it("emits a `settingsAck` event when the peer ACKs our SETTINGS", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
         let acked = false;
         mgr.once("settingsAck", () => {
             acked = true;
@@ -209,7 +208,7 @@ describe("stream manager — SETTINGS / PING", () => {
 
     it("emits a `pingAck` event with the echoed opaque data", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
         const opaque = 0xaaaaaaaaaaaaaaaan;
         let got: bigint | undefined;
         mgr.once("pingAck", (data: bigint) => {
@@ -231,7 +230,7 @@ describe("stream manager — SETTINGS / PING", () => {
 describe("stream manager — flow control", () => {
     it("sends only what the window allows and queues the rest, then drains on WINDOW_UPDATE", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
 
         // Pin the stream-level send window tiny via INITIAL_WINDOW_SIZE so we can
         // observe queueing deterministically.
@@ -279,7 +278,7 @@ describe("stream manager — flow control", () => {
 
     it("connection-level WINDOW_UPDATE drains queued sends across streams", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
         // Shrink the stream-level send window to 64 via INITIAL_WINDOW_SIZE so
         // the 200-byte send is partially queued, then drained by WINDOW_UPDATE.
         mgr.dispatch({
@@ -315,7 +314,7 @@ describe("stream manager — flow control", () => {
 describe("stream manager — GOAWAY", () => {
     it("rejects in-flight streams opened after lastStreamId with GoawayReceivedError", async () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
         const s1 = mgr.openStream(); // id 1
         const s3 = mgr.openStream(); // id 3
 
@@ -344,7 +343,7 @@ describe("stream manager — GOAWAY", () => {
 describe("stream manager — PUSH_PROMISE", () => {
     it("opens a remote-reserved push stream and decodes promised headers", () => {
         const cap = new FrameCapture();
-        const mgr = createStreamManager(cap.sendFrame.bind(cap), createMockEventProvider());
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
         const client = mgr.openStream(); // id 1
 
         let pushedHeaders: Map<string, string> | undefined;

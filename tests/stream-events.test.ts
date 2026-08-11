@@ -9,13 +9,12 @@
 
 import { describe, expect, it } from "vitest";
 import { createStreamManager } from "../src/stream/stream.js";
-import { createMockEventProvider } from "./test-helpers.js";
 
 function noop(): void {}
 
 describe("StreamEventProvider — removal paths", () => {
     it("removeListener stops further delivery of that listener", () => {
-        const mgr = createStreamManager(noop, createMockEventProvider());
+        const mgr = createStreamManager(noop);
         let calls = 0;
         const fn = (): void => {
             calls++;
@@ -29,7 +28,7 @@ describe("StreamEventProvider — removal paths", () => {
     });
 
     it("off is an alias for removeListener", () => {
-        const mgr = createStreamManager(noop, createMockEventProvider());
+        const mgr = createStreamManager(noop);
         let calls = 0;
         const fn = (): void => {
             calls++;
@@ -41,12 +40,12 @@ describe("StreamEventProvider — removal paths", () => {
     });
 
     it("removeListener for an unregistered listener is a safe no-op", () => {
-        const mgr = createStreamManager(noop, createMockEventProvider());
+        const mgr = createStreamManager(noop);
         expect(() => mgr.removeListener("never", () => undefined)).not.toThrow();
     });
 
     it("removeAllListeners() clears listeners across every event", () => {
-        const mgr = createStreamManager(noop, createMockEventProvider());
+        const mgr = createStreamManager(noop);
         let a = 0;
         let b = 0;
         mgr.on("a", () => a++);
@@ -59,7 +58,7 @@ describe("StreamEventProvider — removal paths", () => {
     });
 
     it("removeAllListeners(event) clears only that event", () => {
-        const mgr = createStreamManager(noop, createMockEventProvider());
+        const mgr = createStreamManager(noop);
         let a = 0;
         let b = 0;
         mgr.on("a", () => a++);
@@ -72,7 +71,7 @@ describe("StreamEventProvider — removal paths", () => {
     });
 
     it("once fires only on the first emit", () => {
-        const mgr = createStreamManager(noop, createMockEventProvider());
+        const mgr = createStreamManager(noop);
         let calls = 0;
         mgr.once("o", () => calls++);
         mgr.emit("o");
@@ -81,7 +80,7 @@ describe("StreamEventProvider — removal paths", () => {
     });
 
     it("emit dispatches variadic args to listeners", () => {
-        const mgr = createStreamManager(noop, createMockEventProvider());
+        const mgr = createStreamManager(noop);
         let received: unknown[] = [];
         mgr.on("args", (...a: unknown[]) => {
             received = a;
@@ -91,7 +90,7 @@ describe("StreamEventProvider — removal paths", () => {
     });
 
     it("emit delivers to listeners (the manager proxy does not forward the bridge return value)", () => {
-        const mgr = createStreamManager(noop, createMockEventProvider());
+        const mgr = createStreamManager(noop);
         let calls = 0;
         mgr.on("e", () => {
             calls++;
