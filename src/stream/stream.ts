@@ -32,7 +32,7 @@
  *   majority of real servers.
  */
 
-import { EventEmitter } from "node:events";
+import { InternalEventEmitter } from "../internal-emitter.js";
 import type { EventProvider } from "@browsercore/contracts";
 import type {
     FlowControlWindow,
@@ -195,11 +195,12 @@ function parseStatus(headers: ReadonlyMap<string, string>): number {
 }
 
 // ---------------------------------------------------------------------------
-// Private internal EventEmitter
+// Private internal event emitter
 // ---------------------------------------------------------------------------
 
-// The stream manager owns a private `node:events` EventEmitter for its
-// package-internal signals. These events ("settingsAck", "pingAck", "goaway",
+// The stream manager owns a private {@link InternalEventEmitter} (runtime-
+// independent, no `node:events`) for its package-internal signals. These events
+// ("settingsAck", "pingAck", "goaway",
 // "streamClosed", "push", "pushResponse") are consumed ONLY by the HTTP/2
 // connection in the same package — they must NOT flow through the shared
 // injected EventProvider, which would leak them to other packages and risk
@@ -257,15 +258,15 @@ function transitionOnEndStream(stream: ManagedStream): void {
 
 // ---------------------------------------------------------------------------
 // Manager implementation — emits connection-level signals on a private internal
-// EventEmitter so the connection (same package) can subscribe without leaking
-// internal events to the shared injected EventProvider.
+// InternalEventEmitter so the connection (same package) can subscribe without
+// leaking internal events to the shared injected EventProvider.
 // ---------------------------------------------------------------------------
 
 /**
  * Create a stream manager. `sendFrame` is the callback for serialized frame I/O
  * — the manager never touches the transport directly.
  *
- * The manager creates a **private internal EventEmitter** for its
+ * The manager creates a **private internal emitter** for its
  * connection-level signals. These events are package-internal (consumed only by
  * the HTTP/2 connection in this package) and intentionally do NOT flow through
  * the shared injected EventProvider — this prevents event pollution and
@@ -286,8 +287,9 @@ export function createStreamManager(
 
     // Private internal emitter for package-internal connection-level signals.
     // NOT the shared injected EventProvider — these events are consumed only by
-    // the HTTP/2 connection in this package.
-    const internalEmitter = new EventEmitter();
+    // the HTTP/2 connection in this package. Backed by the runtime-independent
+    // {@link InternalEventEmitter} (no `node:events` dependency).
+    const internalEmitter = new InternalEventEmitter();
 
     /**
      * In-flight PUSH_PROMISE header blocks awaiting CONTINUATION. Keyed by the
@@ -791,29 +793,29 @@ export function createStreamManager(
         get maxConcurrentStreams(): number {
             return maxConcurrentStreams;
         },
-        on: (event: string | symbol, listener: (...args: unknown[]) => void) => {
+        on: (event: string, listener: (...args: unknown[]) => void) => {
             internalEmitter.on(event, listener);
         },
-        once: (event: string | symbol, listener: (...args: unknown[]) => void) => {
+        once: (event: string, listener: (...args: unknown[]) => void) => {
             internalEmitter.once(event, listener);
         },
-        off: (event: string | symbol, listener: (...args: unknown[]) => void) => {
+        off: (event: string, listener: (...args: unknown[]) => void) => {
             internalEmitter.off(event, listener);
         },
-        removeListener: (event: string | symbol, listener: (...args: unknown[]) => void) => {
+        removeListener: (event: string, listener: (...args: unknown[]) => void) => {
             internalEmitter.removeListener(event, listener);
         },
-        removeAllListeners: (event?: string | symbol) => {
+        removeAllListeners: (event?: string) => {
             if (event === undefined) {
                 internalEmitter.removeAllListeners();
             } else {
-                internalEmitter.removeAllListeners(event as string);
+                internalEmitter.removeAllListeners(event);
             }
         },
-        listenerCount: (event: string | symbol): number => {
+        listenerCount: (event: string): number => {
             return internalEmitter.listenerCount(event);
         },
-        emit: (event: string | symbol, ...args: unknown[]) => {
+        emit: (event: string, ...args: unknown[]) => {
             return internalEmitter.emit(event, ...args);
         },
     } as StreamManager & EventProvider;
