@@ -87,6 +87,13 @@ export class Http2ConnectionImpl implements Http2Connection {
     private closing = false;
     /** Set once the connection is fully torn down. */
     private closed = false;
+    /**
+     * Reject callback for a pending `waitForSettingsAck` promise, or `null`
+     * when no SETTINGS-ACK wait is in flight. Stored so `handleFatal` can
+     * reject the promise immediately with the REAL transport error instead of
+     * letting it mask behind the 5-second `SettingsAckTimeoutError`.
+     */
+    private settingsAckReject: ((err: Error) => void) | null = null;
     /** GOAWAY frame the peer sent, if any — used to reject new requests. */
     private receivedGoaway: { lastStreamId: Http2StreamId; errorCode: number; debugData: Bytes } | undefined;
     /** Ids of currently-active client (odd) streams. */
@@ -379,6 +386,11 @@ export class Http2ConnectionImpl implements Http2Connection {
             return;
         }
         this.closing = true;
+        // Reject any pending SETTINGS-ACK wait so the caller sees the REAL
+        // error (e.g. TLS AEAD decryption failure) immediately — not a masked
+        // SettingsAckTimeoutError after the full 5-second timeout window.
+        this.settingsAckReject?.(err);
+        this.settingsAckReject = null;
         this.manager.abortAll(err);
         this.activeClientStreams.clear();
         this.drainSlotWaiters();
@@ -475,13 +487,17 @@ export class Http2ConnectionImpl implements Http2Connection {
     /** Resolve once the SETTINGS ACK arrives, or reject after the timeout. */
     public waitForSettingsAck(timeoutMs: number): Promise<void> {
         return new Promise<void>((resolve, reject) => {
+            this.settingsAckReject = reject;
+
             const timer = this.clock.setTimeout(() => {
+                this.settingsAckReject = null;
                 this.manager.off("settingsAck", onAck);
                 reject(new SettingsAckTimeoutError(timeoutMs));
                 this.handleFatal(new SettingsAckTimeoutError(timeoutMs));
             }, timeoutMs);
 
             const onAck = (): void => {
+                this.settingsAckReject = null;
                 this.clock.clearTimeout(timer);
                 this.manager.off("settingsAck", onAck);
                 resolve();
