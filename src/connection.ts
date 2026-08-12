@@ -78,7 +78,7 @@ export class Http2ConnectionImpl implements Http2Connection {
     private readonly clock: Clock;
     /** Crypto provider for non-protocol randomness (e.g. PING opaque data). */
     private readonly provider: CryptoProvider;
-    /** Stream manager (emits connection-level signals via its private internal EventEmitter). */
+    /** Stream manager (emits connection-level signals via its private internal emitter). */
     private readonly manager: StreamManager & EventProvider;
     /** Serializes + writes a frame to the transport. */
     private readonly sendFrame: (frame: Frame) => void;
