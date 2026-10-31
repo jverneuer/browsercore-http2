@@ -449,6 +449,8 @@ describe("Fix 4: Connection preface sequencing", () => {
                 1_572_864,
             );
 
+            // connectHttp2 no longer waits for this ACK, so the client may
+            // already have closed — a failed write just ends the script.
             await server.write(
                 serializeFrame({
                     type: FrameType.SETTINGS,
@@ -457,7 +459,7 @@ describe("Fix 4: Connection preface sequencing", () => {
                     ack: true,
                     settings: {},
                 }),
-            );
+            ).catch(() => undefined);
         })();
 
         const conn = await connectHttp2({
@@ -484,6 +486,8 @@ describe("Fix 4: Connection preface sequencing", () => {
             expect((priorities[0] as { streamId: Http2StreamId }).streamId).toBe(ID(3));
             expect((priorities[1] as { streamId: Http2StreamId }).streamId).toBe(ID(5));
 
+            // connectHttp2 no longer waits for this ACK, so the client may
+            // already have closed — a failed write just ends the script.
             await server.write(
                 serializeFrame({
                     type: FrameType.SETTINGS,
@@ -492,7 +496,7 @@ describe("Fix 4: Connection preface sequencing", () => {
                     ack: true,
                     settings: {},
                 }),
-            );
+            ).catch(() => undefined);
         })();
 
         const conn = await connectHttp2({
@@ -518,6 +522,8 @@ describe("Fix 4: Connection preface sequencing", () => {
             expect(frames).toHaveLength(1);
             expect(frames[0]!.type).toBe(FrameType.SETTINGS);
 
+            // connectHttp2 no longer waits for this ACK, so the client may
+            // already have closed — a failed write just ends the script.
             await server.write(
                 serializeFrame({
                     type: FrameType.SETTINGS,
@@ -526,7 +532,7 @@ describe("Fix 4: Connection preface sequencing", () => {
                     ack: true,
                     settings: {},
                 }),
-            );
+            ).catch(() => undefined);
         })();
 
         const conn = await connectHttp2({
@@ -546,6 +552,8 @@ describe("Fix 4: Connection preface sequencing", () => {
         const { client, server } = createFakeTransportPair();
         const serverDone = (async () => {
             await server.read(); // PRI + SETTINGS
+            // connectHttp2 no longer waits for this ACK, so the client may
+            // already have closed — a failed write just ends the script.
             await server.write(
                 serializeFrame({
                     type: FrameType.SETTINGS,
@@ -554,7 +562,7 @@ describe("Fix 4: Connection preface sequencing", () => {
                     ack: true,
                     settings: {},
                 }),
-            );
+            ).catch(() => undefined);
         })();
 
         const conn = await connectHttp2({

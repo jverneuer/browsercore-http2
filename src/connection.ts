@@ -485,6 +485,17 @@ export class Http2ConnectionImpl implements Http2Connection {
     }
 
     /** Resolve once the SETTINGS ACK arrives, or reject after the timeout. */
+    /**
+     * Resolve when the peer acknowledges our preface SETTINGS.
+     *
+     * The ACK is REQUIRED of the peer (RFC 9113 §6.5.3) but a conforming
+     * client must NOT block requests on it — some real servers acknowledge
+     * lazily, only around the first processed request (verified against
+     * tls.peet.ws and tools.scrapfly.io, which never ACK a connection that
+     * has not sent a request). A missing ACK therefore times out QUIETLY:
+     * the promise rejects so strict callers can observe it, but the
+     * connection is NOT torn down and requests proceed regardless.
+     */
     public waitForSettingsAck(timeoutMs: number): Promise<void> {
         return new Promise<void>((resolve, reject) => {
             this.settingsAckReject = reject;
@@ -493,7 +504,6 @@ export class Http2ConnectionImpl implements Http2Connection {
                 this.settingsAckReject = null;
                 this.manager.off("settingsAck", onAck);
                 reject(new SettingsAckTimeoutError(timeoutMs));
-                this.handleFatal(new SettingsAckTimeoutError(timeoutMs));
             }, timeoutMs);
 
             const onAck = (): void => {
@@ -596,10 +606,17 @@ export async function connectHttp2(options: Http2Options): Promise<Http2Connecti
         }
     }
 
-    // Start consuming frames BEFORE awaiting the ACK so we don't deadlock if
-    // the peer's SETTINGS + ACK arrive back-to-back.
+    // Start consuming frames BEFORE anything else so the peer's SETTINGS and
+    // ACK are processed as they arrive.
     conn.startReadLoop();
 
-    await conn.waitForSettingsAck(timeoutMs);
+    // Do NOT gate the connection on the peer's SETTINGS-ACK: real servers
+    // that acknowledge lazily (around the first request) would leave the
+    // connection unusable for the whole timeout. The ACK is observed by the
+    // read loop; strict callers may still use waitForSettingsAck directly.
+    void conn.waitForSettingsAck(timeoutMs).catch(() => {
+        // Quietly observed — see waitForSettingsAck. The connection stays
+        // usable; a genuinely dead transport surfaces through the read loop.
+    });
     return conn;
 }
