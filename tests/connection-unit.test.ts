@@ -247,8 +247,11 @@ describe("concurrency slot pool (MAX_CONCURRENT_STREAMS backpressure)", () => {
     });
 });
 
-describe("waitForSettingsAck timeout -> handleFatal", () => {
-    it("rejects connectHttp2 with SettingsAckTimeoutError when the peer never ACKs", async () => {
+describe("waitForSettingsAck timeout (non-fatal)", () => {
+    it("connectHttp2 RESOLVES without the peer's ACK; waitForSettingsAck still reports it", async () => {
+        // Real servers exist that never ACK until the first request is
+        // processed (tls.peet.ws, tools.scrapfly.io) — the connection must be
+        // usable immediately, with the missing ACK observable but non-fatal.
         const { client, server } = createFakeTransportPair();
         const serverDone = (async () => {
             await server.read(); // drain preface + client SETTINGS
@@ -264,10 +267,16 @@ describe("waitForSettingsAck timeout -> handleFatal", () => {
             );
         })();
 
-        await expect(
-            connectHttp2({ transport: client, crypto, events: createMockEventProvider(), settingsAckTimeoutMs: 40 }),
-        ).rejects.toBeInstanceOf(SettingsAckTimeoutError);
+        const conn = await connectHttp2({
+            transport: client,
+            crypto,
+            events: createMockEventProvider(),
+            settingsAckTimeoutMs: 40,
+        });
+        // The strict waiter still rejects with the typed error.
+        await expect(conn.waitForSettingsAck(40)).rejects.toBeInstanceOf(SettingsAckTimeoutError);
 
+        await conn.close();
         await server.close();
         await serverDone;
     });

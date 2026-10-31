@@ -262,6 +262,20 @@ function transitionOnEndStream(stream: ManagedStream): void {
 // leaking internal events to the shared injected EventProvider.
 // ---------------------------------------------------------------------------
 
+/** Clamp a SETTINGS_MAX_FRAME_SIZE value into the RFC 9113 range. */
+function clampMaxFrameSize(value: number): number {
+    if (!Number.isFinite(value)) {
+        return DEFAULT_MAX_FRAME_SIZE;
+    }
+    if (value < MIN_MAX_FRAME_SIZE) {
+        return MIN_MAX_FRAME_SIZE;
+    }
+    if (value > MAX_MAX_FRAME_SIZE) {
+        return MAX_MAX_FRAME_SIZE;
+    }
+    return value;
+}
+
 /**
  * Create a stream manager. `sendFrame` is the callback for serialized frame I/O
  * — the manager never touches the transport directly.
@@ -356,18 +370,6 @@ export function createStreamManager(
 
     // --- window bookkeeping ----------------------------------------------------
 
-    function clampMaxFrameSize(value: number): number {
-        if (!Number.isFinite(value)) {
-            return DEFAULT_MAX_FRAME_SIZE;
-        }
-        if (value < MIN_MAX_FRAME_SIZE) {
-            return MIN_MAX_FRAME_SIZE;
-        }
-        if (value > MAX_MAX_FRAME_SIZE) {
-            return MAX_MAX_FRAME_SIZE;
-        }
-        return value;
-    }
 
     function applyRemoteSettings(settings: Partial<Record<number, number>>): void {
         for (const [keyRaw, value] of Object.entries(settings)) {

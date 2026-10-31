@@ -69,6 +69,16 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
  */
 function runServer(server: FakeTransport, opts: { ackSettings?: boolean } = {}): Promise<void> {
     return (async () => {
+        // Writes during the prologue may race a client close (connectHttp2 no
+        // longer gates on the SETTINGS-ACK, so tests may close immediately);
+        // treat a closed transport as a normal end of script.
+        const tryWrite = async (bytes: Uint8Array): Promise<void> => {
+            try {
+                await server.write(bytes);
+            } catch {
+                /* transport closed — end of script */
+            }
+        };
         // 1. Client connection preface (24 bytes).
         const preface = await server.read();
         expect(preface.length).toBe(24);
@@ -78,7 +88,7 @@ function runServer(server: FakeTransport, opts: { ackSettings?: boolean } = {}):
         await readFrame(server);
 
         // 3. Server sends its own SETTINGS.
-        await server.write(
+        await tryWrite(
             serializeFrame({
                 type: FrameType.SETTINGS,
                 flags: 0,
@@ -90,7 +100,7 @@ function runServer(server: FakeTransport, opts: { ackSettings?: boolean } = {}):
 
         // 4. Server ACKs the client's SETTINGS.
         if (opts.ackSettings !== false) {
-            await server.write(
+            await tryWrite(
                 serializeFrame({
                     type: FrameType.SETTINGS,
                     flags: 0x1,
