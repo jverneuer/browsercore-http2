@@ -583,9 +583,17 @@ export function createStreamManager(
 
         // Replenish the peer's send credit so it keeps flowing. Connection-level
         // WINDOW_UPDATE for the consumed octets; per-stream too while alive.
-        sendWindowUpdate(0 as Http2StreamId, frameLen);
-        if (stream.state.state !== "closed") {
-            sendWindowUpdate(stream.id, frameLen);
+        // A zero-length DATA frame (an empty final frame carrying only
+        // END_STREAM is common) consumed no credit — and a WINDOW_UPDATE with
+        // a ZERO increment is a PROTOCOL_ERROR at the peer (RFC 7540 §6.9, a
+        // connection error on stream 0), which real servers act on: iana's
+        // edge GOAWAYs the connection and the NEXT pooled request fails
+        // (bugs/h2-hpack-reuse-desync). Only replenish consumed octets.
+        if (frameLen > 0) {
+            sendWindowUpdate(0 as Http2StreamId, frameLen);
+            if (stream.state.state !== "closed") {
+                sendWindowUpdate(stream.id, frameLen);
+            }
         }
 
         // Strip padding to recover application data.

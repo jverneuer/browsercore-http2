@@ -226,3 +226,64 @@ describe("WINDOW_UPDATE dispatch", () => {
         expect(s.sendQueue.length).toBe(0);
     });
 });
+
+describe("empty DATA frames consume no flow-control credit", () => {
+    it("emits no zero-increment WINDOW_UPDATE for an empty final DATA frame", () => {
+        // RFC 7540 §6.9: a WINDOW_UPDATE with a 0 increment is a PROTOCOL_ERROR
+        // at the peer — a connection error when it targets stream 0. An empty
+        // DATA(END_STREAM) consumed no octets, so nothing may be replenished
+        // (real-world trigger: iana's edge sends an empty final DATA frame and
+        // GOAWAYs the connection — bugs/h2-hpack-reuse-desync).
+        const cap = new FrameCapture();
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const stream = mgr.openStream();
+        mgr.expectResponse(stream.id, () => {}, () => {});
+        mgr.dispatch({
+            type: FrameType.HEADERS,
+            flags: 0x4,
+            streamId: stream.id,
+            endHeaders: true,
+            endStream: false,
+            padded: false,
+            payload: new Uint8Array([0x88]), // static-indexed :status 200
+        });
+        cap.clear();
+        mgr.dispatch({
+            type: FrameType.DATA,
+            flags: 0x1, // END_STREAM, zero-length payload
+            streamId: stream.id,
+            payload: new Uint8Array(0),
+        });
+        const updates = cap.frames.filter((f) => f.type === FrameType.WINDOW_UPDATE);
+        expect(updates).toEqual([]);
+    });
+
+    it("still replenishes connection + stream windows for non-empty DATA", () => {
+        const cap = new FrameCapture();
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const stream = mgr.openStream();
+        mgr.expectResponse(stream.id, () => {}, () => {});
+        mgr.dispatch({
+            type: FrameType.HEADERS,
+            flags: 0x4,
+            streamId: stream.id,
+            endHeaders: true,
+            endStream: false,
+            padded: false,
+            payload: new Uint8Array([0x88]),
+        });
+        cap.clear();
+        mgr.dispatch({
+            type: FrameType.DATA,
+            flags: 0,
+            streamId: stream.id,
+            payload: new Uint8Array(100),
+        });
+        const updates = cap.frames
+            .filter((f): f is Extract<Frame, { type: typeof FrameType.WINDOW_UPDATE }> =>
+                f.type === FrameType.WINDOW_UPDATE)
+            .map((f) => ({ streamId: f.streamId, inc: f.windowSizeIncrement }));
+        expect(updates).toContainEqual({ streamId: ID(0), inc: 100 });
+        expect(updates).toContainEqual({ streamId: stream.id, inc: 100 });
+    });
+});
