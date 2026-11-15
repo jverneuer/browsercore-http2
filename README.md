@@ -77,7 +77,8 @@ vector in the HTTP/2 wire fingerprint:
 await connectHttp2({
     transport,
     crypto,
-    // SETTINGS frame: explicit id order + optional GREASE
+    // SETTINGS frame: explicit id order + optional GREASE. Only listed ids
+    // are emitted — unlisted settings are dropped (browsers send a fixed set).
     settingsOrder: [0x1, 0x3, 0x4, 0x5, 0x6],
     settingsGrease: true,
     // Connection-level WINDOW_UPDATE (Chrome sends one early)
@@ -86,8 +87,12 @@ await connectHttp2({
     priorityFrames: [
         { streamId: ID(3), streamDependency: ID(0), exclusive: false, weight: 255 },
     ],
-    // Pseudo-header order in request HEADERS frames
+    // Pseudo-header order in request HEADERS frames (bare or colon-prefixed
+    // names both work — profiles use bare names)
     pseudoHeaderOrder: [":method", ":authority", ":scheme", ":path"],
+    // Priority block on request HEADERS frames (PRIORITY flag 0x20; Chrome
+    // sends flags 0x25 with exclusive dep 0, weight 0xff = logical 256)
+    initialPriority: { exclusive: true, streamDependency: ID(0), weight: 255 },
     // Regular header order in request HEADERS frames
     headerOrder: ["cookie", "accept", "user-agent"],
     // HPACK encoder configuration

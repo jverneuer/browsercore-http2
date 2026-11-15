@@ -43,6 +43,7 @@ import {
     type Http2Response,
     type Http2SettingsMap,
     type Http2StreamId,
+    type PriorityFields,
 } from "./types.js";
 import { parseFrame, parseFrameHeader, serializeFrame, FRAME_HEADER_LENGTH } from "./frame/frame.js";
 import { HpackDecoder, HpackEncoder } from "./hpack/hpack.js";
@@ -110,6 +111,13 @@ export class Http2ConnectionImpl implements Http2Connection {
     private readonly pseudoHeaderOrder: readonly string[] | undefined;
     /** Regular header serialization order, or undefined for insertion order. */
     private readonly headerOrder: readonly string[] | undefined;
+    /**
+     * Priority fields for request HEADERS frames (PRIORITY flag 0x20 + 5-byte
+     * block), or undefined to send HEADERS without priority — the pre-fix
+     * behaviour (Chrome 131/140 oracle: flags 0x25,
+     * `{ exclusive: true, streamDependency: 0, weight: 0xff }`).
+     */
+    private readonly initialPriority: PriorityFields | undefined;
     /** Whether to use incremental indexing for regular headers. */
     private readonly hpackIndexing: boolean | undefined;
     /**
@@ -139,6 +147,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         this.provider = provider;
         this.pseudoHeaderOrder = options.pseudoHeaderOrder;
         this.headerOrder = options.headerOrder;
+        this.initialPriority = options.initialPriority;
         this.hpackIndexing = options.hpackIndexing;
         this.hpackEncoder = new HpackEncoder({
             maxTableSize: options.hpackMaxTableSize,
@@ -264,7 +273,11 @@ export class Http2ConnectionImpl implements Http2Connection {
         // insert state persist across this connection's requests.
         const encoded = this.hpackEncoder.encode(block);
         // END_HEADERS (0x4) always set; END_STREAM (0x1) when there is no body.
-        const flags = 0x4 | (endStream ? 0x1 : 0);
+        // PRIORITY (0x20) only when initialPriority is configured — the frame
+        // serializer then prefixes the 5-byte priority block to the header
+        // block (RFC 7540 §6.2). Absent → bare HEADERS (backwards compatible).
+        const priority = this.initialPriority;
+        const flags = 0x4 | (endStream ? 0x1 : 0) | (priority === undefined ? 0 : 0x20);
         this.sendFrame({
             type: FrameType.HEADERS,
             flags,
@@ -272,6 +285,7 @@ export class Http2ConnectionImpl implements Http2Connection {
             endHeaders: true,
             endStream,
             padded: false,
+            ...(priority === undefined ? {} : { priority }),
             payload: encoded,
         });
     }
@@ -302,7 +316,14 @@ export class Http2ConnectionImpl implements Http2Connection {
                 headers.set(name, value);
             }
         } else {
-            for (const name of pseudoOrder) {
+            // Profiles declare the order with BARE names ("method") while the
+            // wire names are colon-prefixed (":method"). Comparing raw profile
+            // entries against the colon-prefixed sources never matched, so
+            // every profile silently fell back to the default order — a
+            // fingerprint divergence (Chrome 131/140 oracle: m,a,s,p; Firefox
+            // oracle: m,p,a,s). Normalize each entry once, then match.
+            const order = pseudoOrder.map((name) => toWirePseudoName(name));
+            for (const name of order) {
                 const src = pseudoSources.find(([n]) => n === name);
                 if (src !== undefined) {
                     headers.set(src[0], src[1]);
@@ -310,7 +331,7 @@ export class Http2ConnectionImpl implements Http2Connection {
             }
             // Append any pseudo-headers not listed in the explicit order.
             for (const [name, value] of pseudoSources) {
-                if (!pseudoOrder.includes(name) && !headers.has(name)) {
+                if (!order.includes(name) && !headers.has(name)) {
                     headers.set(name, value);
                 }
             }
@@ -542,6 +563,15 @@ export class Http2ConnectionImpl implements Http2Connection {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Canonicalize a pseudo-header name from a profile order list to its wire
+ * spelling. Profiles declare bare names ("method"); the wire names are
+ * colon-prefixed (":method"). Both spellings must order the same wire header.
+ */
+function toWirePseudoName(name: string): string {
+    return name.startsWith(":") ? name : `:${name}`;
+}
 
 /** Concatenate two byte arrays. */
 function concat(a: Bytes, b: Bytes): Bytes {

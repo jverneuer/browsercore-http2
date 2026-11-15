@@ -61,6 +61,7 @@ export {
     type Http2SettingsMap,
     type Http2StreamId,
     type PingFrame,
+    type PriorityFields,
     type PriorityFrame,
     type PriorityFrameSpec,
     type PushPromiseFrame,

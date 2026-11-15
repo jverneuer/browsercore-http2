@@ -58,6 +58,21 @@ export interface DataFrame extends BaseFrame {
     readonly payload: Uint8Array;
 }
 
+/**
+ * The priority triple shared by PRIORITY frames and HEADERS frames carrying
+ * the PRIORITY flag (RFC 7540 §6.2/§6.3): exclusive-dependency bit, 31-bit
+ * stream dependency, 8-bit weight.
+ *
+ * `weight` is the on-wire byte (RFC 7540 §5.3.2: logical weight 1..256
+ * encodes as wire 0..255 — the Chrome 131/140 oracle's logical weight 256 is
+ * `0xff` here).
+ */
+export interface PriorityFields {
+    readonly exclusive: boolean;
+    readonly streamDependency: Http2StreamId;
+    readonly weight: number;
+}
+
 export interface HeadersFrame extends BaseFrame {
     readonly type: typeof FrameType.HEADERS;
     /** `true` if the END_HEADERS flag (0x4) is set. */
@@ -66,18 +81,17 @@ export interface HeadersFrame extends BaseFrame {
     readonly endStream: boolean;
     /** `true` if the PADDED flag (0x8) is set. */
     readonly padded: boolean;
-    /** Optional priority fields (present when the PRIORITY flag 0x20 is set). */
-    readonly exclusive?: boolean;
-    readonly streamDependency?: Http2StreamId;
-    readonly weight?: number;
+    /**
+     * Priority fields — present only when the PRIORITY flag (0x20) is set.
+     * Serialized as the 5-byte block preceding the header block fragment
+     * (RFC 7540 §6.2). Absent → the payload is the bare header block.
+     */
+    readonly priority?: PriorityFields;
     readonly payload: Uint8Array;
 }
 
-export interface PriorityFrame extends BaseFrame {
+export interface PriorityFrame extends BaseFrame, PriorityFields {
     readonly type: typeof FrameType.PRIORITY;
-    readonly exclusive: boolean;
-    readonly streamDependency: Http2StreamId;
-    readonly weight: number;
 }
 
 export interface RstStreamFrame extends BaseFrame {
@@ -92,10 +106,14 @@ export interface SettingsFrame extends BaseFrame {
     readonly settings: Http2SettingsMap;
     /**
      * Explicit serialization order for the SETTINGS payload (impersonation).
-     * When present, settings are emitted in this id order — bypassing the
-     * ascending-sort that JavaScript applies to integer object keys. IDs not
-     * present in the map are skipped; IDs in the map but not in this array are
-     * appended afterwards. Absent → natural (sorted) key order.
+     * When present, ONLY the settings listed here are emitted, in this id
+     * order — bypassing the ascending-sort that JavaScript applies to integer
+     * object keys. IDs not present in the map are skipped, and IDs in the map
+     * but not in this array are silently DROPPED: real browsers send a fixed
+     * setting set (Chrome 131/140 oracle: exactly 1, 2, 4, 6), and appending
+     * unlisted entries would produce a frame no real client ever sends.
+     * Callers wanting a setting on the wire must list it. Absent → natural
+     * (sorted) key order with every setting emitted.
      */
     readonly settingsOrder?: readonly number[];
     /**
@@ -157,11 +175,8 @@ export type Frame =
  * Mirrors {@link PriorityFrame} without the wire discriminants (`type`/`flags`),
  * so callers can describe dependency-tree setup concisely in {@link Http2Options}.
  */
-export interface PriorityFrameSpec {
+export interface PriorityFrameSpec extends PriorityFields {
     readonly streamId: Http2StreamId;
-    readonly streamDependency: Http2StreamId;
-    readonly exclusive: boolean;
-    readonly weight: number;
 }
 
 /** Lifecycle state of an HTTP/2 stream. */
@@ -309,10 +324,22 @@ export interface Http2Options {
 
     /**
      * Order of pseudo-headers (`:method`, `:path`, `:scheme`, `:authority`) in
-     * request HEADERS frames. Absent → the RFC 7540 §8.1.2 default order
+     * request HEADERS frames. Entries may be written with or without the
+     * leading colon — profiles declare bare names (`"method"`), wire names are
+     * colon-prefixed (`":method"`); both spellings reach the wire in the given
+     * order. Absent → the RFC 7540 §8.1.2 default order
      * (`:method :scheme :authority :path`).
      */
     readonly pseudoHeaderOrder?: readonly string[];
+    /**
+     * Priority fields for request HEADERS frames. When present, every request
+     * HEADERS frame sets the PRIORITY flag (0x20) and carries the 5-byte
+     * priority block before the header block fragment (RFC 7540 §6.2) — the
+     * Chrome 131/140 oracle sends flags 0x25 with
+     * `{ exclusive: true, streamDependency: 0, weight: 0xff }` (logical weight
+     * 256). Absent → HEADERS without the flag or block (backwards compatible).
+     */
+    readonly initialPriority?: PriorityFields;
     /**
      * Order of regular (non-pseudo) headers in request HEADERS frames. Headers
      * named here are emitted first (in this order); any remaining headers
