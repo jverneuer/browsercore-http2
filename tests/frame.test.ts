@@ -55,10 +55,10 @@ describe("DATA frame", () => {
 });
 
 describe("HEADERS frame", () => {
-    // The HEADERS parser extracts only the flag-derived booleans and passes the
-    // payload through verbatim (serialize is identity on payload too). The
-    // optional priority fields are not decoded from the wire — that is an
-    // unimplemented feature, so it is intentionally not asserted here.
+    // The HEADERS parser extracts the flag-derived booleans and passes the
+    // payload through verbatim — EXCEPT when the PRIORITY flag (0x20) is set:
+    // the leading 5-byte priority block is then exposed as `priority` and
+    // stripped from the payload (RFC 7540 §6.2).
     it("round-trips HEADERS with END_HEADERS flag", () => {
         const frame: Frame = {
             type: FrameType.HEADERS,
@@ -89,6 +89,31 @@ describe("HEADERS frame", () => {
         };
         const parsed = parseFrame(serializeFrame(frame));
         expect((parsed as { endStream: boolean }).endStream).toBe(true);
+    });
+
+    it("serializes + decodes the 5-byte priority block when PRIORITY flag 0x20 is set", () => {
+        // Chrome 131/140 oracle: flags 0x25 with
+        // { exclusive: true, streamDependency: 0, weight: 0xff }.
+        const frame: Frame = {
+            type: FrameType.HEADERS,
+            flags: 0x25, // END_STREAM | END_HEADERS | PRIORITY
+            streamId: ID(1),
+            endHeaders: true,
+            endStream: true,
+            padded: false,
+            priority: { exclusive: true, streamDependency: ID(0), weight: 255 },
+            payload: new Uint8Array([0x82, 0x87]), // :method GET, :scheme https
+        };
+        const bytes = serializeFrame(frame);
+        // Wire: 5-byte priority block prefixes the header block fragment.
+        expect(Array.from(bytes.subarray(FRAME_HEADER_LENGTH, FRAME_HEADER_LENGTH + 5))).toEqual([
+            0x80, 0x00, 0x00, 0x00, 0xff,
+        ]);
+        expect(Array.from(bytes.subarray(FRAME_HEADER_LENGTH + 5))).toEqual([0x82, 0x87]);
+        // Decode: the block is exposed as `priority` and stripped from payload.
+        const parsed = parseFrame(bytes) as { priority?: { exclusive: boolean; streamDependency: Http2StreamId; weight: number }; payload: Uint8Array };
+        expect(parsed.priority).toEqual({ exclusive: true, streamDependency: ID(0), weight: 255 });
+        expect(Array.from(parsed.payload)).toEqual([0x82, 0x87]);
     });
 });
 

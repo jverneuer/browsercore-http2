@@ -6,7 +6,7 @@
  * (31 bits).
  */
 
-import { FrameType, type Frame, type Http2SettingsKey, type Http2SettingsMap, type Http2StreamId, type SettingsFrame } from "../types.js";
+import { FrameType, type Frame, type Http2SettingsKey, type Http2SettingsMap, type Http2StreamId, type PriorityFields, type SettingsFrame } from "../types.js";
 import { assertNever, generateHttp2GreaseValue } from "../utils.js";
 import { FrameParseError } from "../errors.js";
 import { validateFrameType } from "../schemas.js";
@@ -50,22 +50,45 @@ export function serializeFrame(frame: Frame): Uint8Array {
     return out;
 }
 
+/**
+ * Encode the 5-byte priority block shared by PRIORITY frames (§6.3) and
+ * HEADERS frames with the PRIORITY flag (§6.2): exclusive bit + 31-bit stream
+ * dependency, then the 8-bit weight.
+ */
+function serializePriorityFields(fields: PriorityFields): Uint8Array {
+    const out = new Uint8Array(5);
+    const view = new DataView(out.buffer);
+    const exclusive = fields.exclusive ? 0x80000000 : 0;
+    view.setUint32(0, Math.trunc(exclusive | (fields.streamDependency & 0x7fffffff)));
+    out[4] = fields.weight & 0xff;
+    return out;
+}
+
+/** Concatenate two payload byte arrays (priority block + header block). */
+function concatPayloads(a: Uint8Array, b: Uint8Array): Uint8Array {
+    const out = new Uint8Array(a.length + b.length);
+    out.set(a, 0);
+    out.set(b, a.length);
+    return out;
+}
+
 /** Serialize just the payload — dispatches on frame type. */
 function serializePayload(frame: Frame): Uint8Array {
     switch (frame.type) {
         case FrameType.DATA:
-        case FrameType.HEADERS:
         case FrameType.PUSH_PROMISE:
         case FrameType.CONTINUATION:
             return frame.payload;
-        case FrameType.PRIORITY: {
-            const out = new Uint8Array(5);
-            const view = new DataView(out.buffer);
-            const exclusive = frame.exclusive ? 0x80000000 : 0;
-            view.setUint32(0, Math.trunc(exclusive | (frame.streamDependency & 0x7fffffff)));
-            out[4] = frame.weight & 0xff;
-            return out;
-        }
+        case FrameType.HEADERS:
+            // With the PRIORITY flag (0x20) the wire payload is the 5-byte
+            // priority block followed by the header block fragment (RFC 7540
+            // §6.2) — the Chrome 131/140 oracle sends flags 0x25 with
+            // { exclusive: 1, dependency 0, weight 0xff } on requests.
+            return frame.priority === undefined
+                ? frame.payload
+                : concatPayloads(serializePriorityFields(frame.priority), frame.payload);
+        case FrameType.PRIORITY:
+            return serializePriorityFields(frame);
         case FrameType.RST_STREAM: {
             const out = new Uint8Array(4);
             new DataView(out.buffer).setUint32(0, Math.trunc(frame.errorCode));
@@ -115,11 +138,13 @@ function serializePayload(frame: Frame): Uint8Array {
  *
  * Order precedence:
  *   1. GREASE setting (when `grease` is true) — always first (Chrome pattern).
- *   2. Settings listed in `settingsOrder` — emitted in that order.
- *   3. Remaining settings not in `settingsOrder` — appended in natural key order.
- *
- * When `settingsOrder` is absent, all settings are emitted in natural
- * (ascending-sorted) key order — matching pre-impersonation behaviour.
+ *   2. When `settingsOrder` is present: ONLY the settings it lists, in that
+ *      order. Unlisted settings are silently DROPPED — real browsers emit a
+ *      fixed set (Chrome 131/140 oracle: exactly ids 1, 2, 4, 6), and
+ *      appending the leftovers produced a 6-entry frame no real client sends.
+ *      Callers wanting a setting on the wire must list it.
+ *   3. When `settingsOrder` is absent: all settings in natural
+ *      (ascending-sorted) key order — matching pre-impersonation behaviour.
  */
 function collectSettingsEntries(frame: SettingsFrame): Array<[number, number]> {
     const entries: Array<[number, number]> = [];
@@ -140,18 +165,11 @@ function collectSettingsEntries(frame: SettingsFrame): Array<[number, number]> {
             }
         }
     } else {
-        // Explicit order: emit each listed id that has a defined value.
+        // Explicit order: emit only the listed ids that have a defined value.
         for (const id of order) {
             const value = settings[id as Http2SettingsKey];
             if (value !== undefined) {
                 entries.push([id, value]);
-            }
-        }
-        // Append any settings not covered by the explicit order.
-        const covered = new Set(order);
-        for (const [key, value] of Object.entries(settings)) {
-            if (value !== undefined && !covered.has(Number(key))) {
-                entries.push([Number(key), value]);
             }
         }
     }
@@ -194,6 +212,21 @@ export function parseFrame(buf: Uint8Array): Frame {
 }
 
 /**
+ * Decode the leading 5-byte priority block of a PRIORITY frame or a HEADERS
+ * frame with the PRIORITY flag (RFC 7540 §6.2/§6.3): exclusive bit + 31-bit
+ * stream dependency, then the 8-bit weight.
+ */
+function decodePriorityFields(payload: Uint8Array): PriorityFields {
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    const depRaw = view.getUint32(0);
+    return {
+        exclusive: (depRaw & 0x80000000) !== 0,
+        streamDependency: (depRaw & 0x7fffffff) as Http2StreamId,
+        weight: payload[4] ?? 0,
+    };
+}
+
+/**
  * Decode a frame body given its header fields and payload bytes.
  *
  * The type byte is validated against known frame types before construction.
@@ -211,7 +244,13 @@ function decodeFrame(type: number, flags: number, streamId: Http2StreamId, paylo
     switch (validType) {
         case FrameType.DATA:
             return { type: validType, flags, streamId, payload };
-        case FrameType.HEADERS:
+        case FrameType.HEADERS: {
+            // With the PRIORITY flag (0x20) the first 5 payload bytes are the
+            // priority block, not HPACK (RFC 7540 §6.2) — expose them as
+            // `priority` and strip them so `payload` is always the bare
+            // header block fragment downstream HPACK decoding expects.
+            const hasPriority = (flags & 0x20) !== 0;
+            const priority = hasPriority ? decodePriorityFields(payload) : undefined;
             return {
                 type: validType,
                 flags,
@@ -219,20 +258,17 @@ function decodeFrame(type: number, flags: number, streamId: Http2StreamId, paylo
                 endHeaders: (flags & 0x4) !== 0,
                 endStream: (flags & 0x1) !== 0,
                 padded: (flags & 0x8) !== 0,
-                payload,
+                ...(priority === undefined ? {} : { priority }),
+                payload: hasPriority ? (payload.subarray(5) as Uint8Array) : payload,
             };
-        case FrameType.PRIORITY: {
-            const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-            const depRaw = view.getUint32(0);
+        }
+        case FrameType.PRIORITY:
             return {
                 type: validType,
                 flags,
                 streamId,
-                exclusive: (depRaw & 0x80000000) !== 0,
-                streamDependency: (depRaw & 0x7fffffff) as Http2StreamId,
-                weight: payload[4] ?? 0,
+                ...decodePriorityFields(payload),
             };
-        }
         case FrameType.RST_STREAM:
             return {
                 type: validType,

@@ -117,21 +117,59 @@ describe("Fix 1: SETTINGS order preservation", () => {
         expect(parsed.settings[0x3]).toBe(300);
     });
 
-    it("appends settings not covered by settingsOrder after the ordered ones", () => {
+    it("drops settings not listed in settingsOrder (ordered-only emission)", () => {
+        // Chrome 131/140 oracle: real browsers emit a FIXED setting set. A
+        // 6-entry frame with MAX_CONCURRENT_STREAMS=100 and
+        // MAX_FRAME_SIZE=16384 appended after the ordered four is an
+        // "impossible browser" frame no real client ever sends — unlisted
+        // entries must be silently dropped, not appended.
         const frame: Frame = {
             type: FrameType.SETTINGS,
             flags: 0,
             streamId: ID(0),
             ack: false,
-            settings: { [0x1]: 10, [0x2]: 20, [0x3]: 30, [0x4]: 40 },
-            settingsOrder: [0x4],
+            settings: {
+                [0x1]: 65536,
+                [0x2]: 0,
+                [0x3]: 100,
+                [0x4]: 6291456,
+                [0x5]: 16384,
+                [0x6]: 262144,
+            },
+            settingsOrder: [0x1, 0x2, 0x4, 0x6],
         };
         const bytes = serializeFrame(frame);
         const payload = bytes.subarray(FRAME_HEADER_LENGTH);
-        const ids = settingIdsFromPayload(payload);
-        // 0x4 first, then the rest in natural order.
-        expect(ids[0]).toBe(0x4);
-        expect(ids.slice(1).sort((a, b) => a - b)).toEqual([0x1, 0x2, 0x3]);
+        // Exactly the 4 listed entries → 4 × 6 bytes, nothing appended.
+        expect(payload).toHaveLength(24);
+        expect(settingIdsFromPayload(payload)).toEqual([0x1, 0x2, 0x4, 0x6]);
+    });
+
+    it("emits exactly the Chrome 24-byte SETTINGS payload for order [1,2,4,6]", () => {
+        // Ground truth from the Chrome 131/140 oracle capture: SETTINGS
+        // wire_order = [(1,65536),(2,0),(4,6291456),(6,262144)] — byte-exact.
+        const frame: Frame = {
+            type: FrameType.SETTINGS,
+            flags: 0,
+            streamId: ID(0),
+            ack: false,
+            settings: {
+                [0x1]: 65536,
+                [0x2]: 0,
+                [0x4]: 6291456,
+                [0x6]: 262144,
+            },
+            settingsOrder: [0x1, 0x2, 0x4, 0x6],
+        };
+        const bytes = serializeFrame(frame);
+        const payload = bytes.subarray(FRAME_HEADER_LENGTH);
+        // Each entry: 2-byte id BE + 4-byte value BE.
+        expect(Array.from(payload)).toEqual([
+            0x00, 0x01, 0x00, 0x01, 0x00, 0x00, // 1: 65536
+            0x00, 0x02, 0x00, 0x00, 0x00, 0x00, // 2: 0
+            0x00, 0x04, 0x00, 0x60, 0x00, 0x00, // 4: 6291456
+            0x00, 0x06, 0x00, 0x04, 0x00, 0x00, // 6: 262144
+        ]);
     });
 
     it("uses natural sorted order when settingsOrder is absent", () => {
@@ -335,6 +373,136 @@ describe("Fix 3: Configurable pseudo-header order", () => {
             crypto,
             events: createMockEventProvider(),
             pseudoHeaderOrder: [":method", ":authority", ":scheme", ":path"],
+        });
+        await conn.request(sampleReq);
+        await conn.close();
+        await serverDone;
+    });
+
+    it("sends pseudo-headers in the profile order when declared with BARE names (m,a,s,p)", async () => {
+        // Divergence D2: profiles (chrome/edge/firefox/safari) declare the
+        // order with bare names ("method") — the wire names are
+        // colon-prefixed. The old lookup compared raw entries against
+        // ":method" etc. and never matched, silently falling back to the
+        // default m,s,a,p. Chrome 131/140 oracle order: m,a,s,p.
+        const { client, server } = createFakeTransportPair();
+        const serverDone = (async () => {
+            await server.read(); // drain preface
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0,
+                    streamId: ID(0),
+                    ack: false,
+                    settings: {},
+                }),
+            );
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0x1,
+                    streamId: ID(0),
+                    ack: true,
+                    settings: {},
+                }),
+            );
+
+            let frame: Frame;
+            do {
+                frame = await readFrame(server);
+            } while (frame.type !== FrameType.HEADERS);
+
+            const dec = new HpackDecoder();
+            const headers = dec.decode((frame as { payload: Uint8Array }).payload);
+            expect(headers.map((h) => h.name).slice(0, 4)).toEqual([
+                ":method",
+                ":authority",
+                ":scheme",
+                ":path",
+            ]);
+
+            await server.write(
+                serializeFrame({
+                    type: FrameType.HEADERS,
+                    flags: 0x5,
+                    streamId: frame.streamId,
+                    endHeaders: true,
+                    endStream: true,
+                    padded: false,
+                    payload: new Uint8Array([0x88]),
+                }),
+            );
+        })();
+
+        const conn = await connectHttp2({
+            transport: client,
+            crypto,
+            events: createMockEventProvider(),
+            // Exactly how @browsercore/profiles declares Chrome's order.
+            pseudoHeaderOrder: ["method", "authority", "scheme", "path"],
+        });
+        await conn.request(sampleReq);
+        await conn.close();
+        await serverDone;
+    });
+
+    it("sends pseudo-headers in the Firefox order when declared with bare names (m,p,a,s)", async () => {
+        // Firefox oracle order: :method, :path, :authority, :scheme — proves
+        // the order itself (not just non-default-ness) reaches the wire.
+        const { client, server } = createFakeTransportPair();
+        const serverDone = (async () => {
+            await server.read(); // drain preface
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0,
+                    streamId: ID(0),
+                    ack: false,
+                    settings: {},
+                }),
+            );
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0x1,
+                    streamId: ID(0),
+                    ack: true,
+                    settings: {},
+                }),
+            );
+
+            let frame: Frame;
+            do {
+                frame = await readFrame(server);
+            } while (frame.type !== FrameType.HEADERS);
+
+            const dec = new HpackDecoder();
+            const headers = dec.decode((frame as { payload: Uint8Array }).payload);
+            expect(headers.map((h) => h.name).slice(0, 4)).toEqual([
+                ":method",
+                ":path",
+                ":authority",
+                ":scheme",
+            ]);
+
+            await server.write(
+                serializeFrame({
+                    type: FrameType.HEADERS,
+                    flags: 0x5,
+                    streamId: frame.streamId,
+                    endHeaders: true,
+                    endStream: true,
+                    padded: false,
+                    payload: new Uint8Array([0x88]),
+                }),
+            );
+        })();
+
+        const conn = await connectHttp2({
+            transport: client,
+            crypto,
+            events: createMockEventProvider(),
+            pseudoHeaderOrder: ["method", "path", "authority", "scheme"],
         });
         await conn.request(sampleReq);
         await conn.close();
@@ -815,6 +983,226 @@ describe("Fix 7: Regular header order", () => {
 
         const conn = await connectHttp2({ transport: client, crypto, events: createMockEventProvider() });
         await conn.request({ ...sampleReq, headers: reqHeaders });
+        await conn.close();
+        await serverDone;
+    });
+});
+
+// =========================================================================
+// Fix 8: HEADERS frame PRIORITY flag + payload block (D5)
+// =========================================================================
+
+describe("Fix 8: HEADERS frame PRIORITY flag", () => {
+    /** Read one full frame's RAW wire bytes (header + payload), unparsed. */
+    async function readRawFrame(t: FakeTransport): Promise<Uint8Array> {
+        let buf = t.readBuffer;
+        while (buf.length < FRAME_HEADER_LENGTH) {
+            const extra = await t.read();
+            buf = concat(buf, extra);
+        }
+        const header = parseFrameHeader(buf);
+        const total = FRAME_HEADER_LENGTH + header.length;
+        while (buf.length < total) {
+            const extra = await t.read();
+            buf = concat(buf, extra);
+        }
+        t.readBuffer = buf.subarray(total);
+        return buf.subarray(0, total);
+    }
+
+    /** Read raw bytes of the client's first HEADERS frame. */
+    async function readRawHeadersFrame(server: FakeTransport): Promise<Uint8Array> {
+        let raw: Uint8Array;
+        do {
+            raw = await readRawFrame(server);
+        } while (parseFrameHeader(raw).type !== FrameType.HEADERS);
+        return raw;
+    }
+
+    it("sets flags 0x25 and carries the 5-byte priority block when initialPriority is set", async () => {
+        // Chrome 131/140 oracle (DIVERGENCE_REPORT §3.5): the first HEADERS on
+        // a stream carries flags 0x25 (END_STREAM | END_HEADERS | PRIORITY)
+        // with priority { exclusive: 1, streamDependency: 0, weight: 256 } —
+        // wire block 80 00 00 00 ff (logical weight 256 = wire byte 0xff).
+        const { client, server } = createFakeTransportPair();
+        const serverDone = (async () => {
+            await server.read(); // drain preface
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0,
+                    streamId: ID(0),
+                    ack: false,
+                    settings: {},
+                }),
+            );
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0x1,
+                    streamId: ID(0),
+                    ack: true,
+                    settings: {},
+                }),
+            );
+
+            const raw = await readRawHeadersFrame(server);
+            // Flags byte: END_STREAM | END_HEADERS | PRIORITY.
+            expect(raw[4]).toBe(0x25);
+            // 5-byte priority block prefixes the header block fragment.
+            const priorityBlock = raw.subarray(FRAME_HEADER_LENGTH, FRAME_HEADER_LENGTH + 5);
+            expect(Array.from(priorityBlock)).toEqual([0x80, 0x00, 0x00, 0x00, 0xff]);
+            // The remainder is the plain HPACK header block.
+            const dec = new HpackDecoder();
+            const headers = dec.decode(raw.subarray(FRAME_HEADER_LENGTH + 5));
+            expect(headers.filter((h) => h.name.startsWith(":")).map((h) => h.name)).toEqual([
+                ":method",
+                ":scheme",
+                ":authority",
+                ":path",
+            ]);
+
+            await server.write(
+                serializeFrame({
+                    type: FrameType.HEADERS,
+                    flags: 0x5,
+                    streamId: parseFrameHeader(raw).streamId,
+                    endHeaders: true,
+                    endStream: true,
+                    padded: false,
+                    payload: new Uint8Array([0x88]),
+                }),
+            );
+        })();
+
+        const conn = await connectHttp2({
+            transport: client,
+            crypto,
+            events: createMockEventProvider(),
+            initialPriority: { exclusive: true, streamDependency: ID(0), weight: 255 },
+        });
+        await conn.request(sampleReq);
+        await conn.close();
+        await serverDone;
+    });
+
+    it("sets flags 0x24 (PRIORITY, no END_STREAM) for requests with a body", async () => {
+        const { client, server } = createFakeTransportPair();
+        const serverDone = (async () => {
+            await server.read(); // drain preface
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0,
+                    streamId: ID(0),
+                    ack: false,
+                    settings: {},
+                }),
+            );
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0x1,
+                    streamId: ID(0),
+                    ack: true,
+                    settings: {},
+                }),
+            );
+
+            const raw = await readRawHeadersFrame(server);
+            expect(raw[4]).toBe(0x24);
+            const priorityBlock = raw.subarray(FRAME_HEADER_LENGTH, FRAME_HEADER_LENGTH + 5);
+            expect(Array.from(priorityBlock)).toEqual([0x80, 0x00, 0x00, 0x00, 0xff]);
+
+            // Complete the exchange so the request resolves: response HEADERS
+            // (END_HEADERS) + DATA-less END_STREAM + a DATA frame for the body.
+            await server.write(
+                serializeFrame({
+                    type: FrameType.HEADERS,
+                    flags: 0x4,
+                    streamId: parseFrameHeader(raw).streamId,
+                    endHeaders: true,
+                    endStream: false,
+                    padded: false,
+                    payload: new Uint8Array([0x88]),
+                }),
+            );
+            await server.write(
+                serializeFrame({
+                    type: FrameType.DATA,
+                    flags: 0x1,
+                    streamId: parseFrameHeader(raw).streamId,
+                    payload: new Uint8Array(0),
+                }),
+            );
+        })();
+
+        const conn = await connectHttp2({
+            transport: client,
+            crypto,
+            events: createMockEventProvider(),
+            initialPriority: { exclusive: true, streamDependency: ID(0), weight: 255 },
+        });
+        await conn.request({ ...sampleReq, body: new Uint8Array([0x61]) });
+        await conn.close();
+        await serverDone;
+    });
+
+    it("keeps today's bare HEADERS (flags 0x05, no priority block) when initialPriority is absent", async () => {
+        const { client, server } = createFakeTransportPair();
+        const serverDone = (async () => {
+            await server.read(); // drain preface
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0,
+                    streamId: ID(0),
+                    ack: false,
+                    settings: {},
+                }),
+            );
+            await server.write(
+                serializeFrame({
+                    type: FrameType.SETTINGS,
+                    flags: 0x1,
+                    streamId: ID(0),
+                    ack: true,
+                    settings: {},
+                }),
+            );
+
+            const raw = await readRawHeadersFrame(server);
+            // Backwards compatible: no PRIORITY flag, no 5-byte block.
+            expect(raw[4]).toBe(0x05);
+            const dec = new HpackDecoder();
+            // The WHOLE payload is HPACK from byte zero.
+            const headers = dec.decode(raw.subarray(FRAME_HEADER_LENGTH));
+            expect(headers.filter((h) => h.name.startsWith(":")).map((h) => h.name)).toEqual([
+                ":method",
+                ":scheme",
+                ":authority",
+                ":path",
+            ]);
+
+            await server.write(
+                serializeFrame({
+                    type: FrameType.HEADERS,
+                    flags: 0x5,
+                    streamId: parseFrameHeader(raw).streamId,
+                    endHeaders: true,
+                    endStream: true,
+                    padded: false,
+                    payload: new Uint8Array([0x88]),
+                }),
+            );
+        })();
+
+        const conn = await connectHttp2({
+            transport: client,
+            crypto,
+            events: createMockEventProvider(),
+        });
+        await conn.request(sampleReq);
         await conn.close();
         await serverDone;
     });
