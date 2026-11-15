@@ -5,6 +5,13 @@
  * decoding the peer's headers in order). On the wire, every header-field
  * representation (§6) is one of: indexed, literal with incremental indexing,
  * literal without indexing, literal never-indexed, or a dynamic-table-size update.
+ *
+ * LIFETIME: one decoder per HTTP/2 CONNECTION, for its whole lifetime. The
+ * dynamic table is shared by every header block on the connection (§4) — a
+ * fresh decoder per block cannot resolve the indexed references a stateful
+ * peer encoder emits from its second response on
+ * (bugs/h2-hpack-reuse-desync). The constructor limit is the table size this
+ * side advertised via SETTINGS_HEADER_TABLE_SIZE (default 4096).
  */
 
 import type { HeaderBlock, HeaderField } from "./types.js";

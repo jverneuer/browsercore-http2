@@ -12,6 +12,11 @@
  * not consult the dynamic table — that keeps encoding deterministic and decoupled
  * from a table that is only meaningful when headers are processed in order with
  * the peer's decoder.
+ *
+ * LIFETIME: one encoder per HTTP/2 CONNECTION, for its whole lifetime. HPACK
+ * state is per-connection (RFC 7541 §4) — a fresh encoder per request would
+ * re-emit its dynamic table size update in every header block and desync from
+ * the peer's decoder (bugs/h2-hpack-reuse-desync).
  */
 
 import type { HeaderField } from "./types.js";
@@ -80,16 +85,25 @@ export interface HpackEncoderOptions {
 
 export class HpackEncoder {
     private nextSizeUpdate: number | undefined;
-    private readonly maxTableSize: number;
+    /** Table size limit from local configuration (profile). */
+    private readonly configuredTableSize: number;
+    /**
+     * Effective table size limit — the configured limit clamped by the peer's
+     * SETTINGS_HEADER_TABLE_SIZE once known. Tracked so a size-update
+     * instruction is queued only when this value actually CHANGES (RFC 7541
+     * §4.2: the update follows a change, it is not re-announced per block).
+     */
+    private effectiveTableSize: number;
     private readonly useHuffman: boolean;
 
     constructor(options: HpackEncoderOptions = {}) {
-        this.maxTableSize = options.maxTableSize ?? HPACK_DEFAULT_TABLE_SIZE;
+        this.configuredTableSize = options.maxTableSize ?? HPACK_DEFAULT_TABLE_SIZE;
+        this.effectiveTableSize = this.configuredTableSize;
         this.useHuffman = options.useHuffman ?? true;
         // Emit a dynamic table size update on the first header block when the
         // configured size differs from the HPACK default (RFC 7541 §4.2).
-        if (this.maxTableSize !== HPACK_DEFAULT_TABLE_SIZE) {
-            this.nextSizeUpdate = this.maxTableSize;
+        if (this.effectiveTableSize !== HPACK_DEFAULT_TABLE_SIZE) {
+            this.nextSizeUpdate = this.effectiveTableSize;
         }
     }
 
@@ -107,9 +121,31 @@ export class HpackEncoder {
         return Uint8Array.from(octets);
     }
 
-    /** Update the dynamic table size limit (from a DYNAMIC_TABLE_SIZE_UPDATE). */
+    /**
+     * Update the dynamic table size limit. Queues a size-update instruction
+     * for the next header block ONLY when the limit actually changed — a
+     * re-announcement without a change would shift the peer's decoder state
+     * for no reason and is what a per-request encoder did
+     * (bugs/h2-hpack-reuse-desync).
+     */
     public setMaxTableSize(maxSize: number): void {
+        if (maxSize === this.effectiveTableSize) {
+            return;
+        }
+        this.effectiveTableSize = maxSize;
         this.nextSizeUpdate = maxSize;
+    }
+
+    /**
+     * Apply the peer's SETTINGS_HEADER_TABLE_SIZE (RFC 9113 §6.5.2): the
+     * peer's decoder set a hard cap on the dynamic table size this encoder
+     * may use. The effective limit becomes min(configured, peer cap) —
+     * announcing more than the cap is a COMPRESSION_ERROR at the peer. A
+     * lower cap queues a size-update instruction for the next header block;
+     * an unchanged limit queues nothing.
+     */
+    public applyPeerHeaderTableSize(peerLimit: number): void {
+        this.setMaxTableSize(Math.min(this.configuredTableSize, peerLimit));
     }
 
     /** Decide which representation to use for a single header field. */

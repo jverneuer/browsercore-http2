@@ -41,7 +41,7 @@ import type {
     Http2StreamId,
     StreamState,
 } from "../types.js";
-import { decodeHeaders } from "../hpack/hpack.js";
+import { HpackDecoder } from "../hpack/hpack.js";
 import { DEFAULT_MAX_FRAME_SIZE } from "../frame/frame.js";
 import { GoawayReceivedError, RstStreamError, StreamClosedError } from "../errors.js";
 
@@ -215,13 +215,14 @@ function parseStatus(headers: ReadonlyMap<string, string>): number {
 // rebuilt on every `createStreamManager()` call.
 // ---------------------------------------------------------------------------
 
-function decodePendingHeaders(stream: ManagedStream): void {
+function decodePendingHeaders(stream: ManagedStream, hpackDecoder: HpackDecoder): void {
     const block = Uint8Array.from(stream.pendingHeaderBytes);
     stream.pendingHeaderBytes = [];
-    const decoded = decodeHeaders(block);
-    // decodeHeaders returns a ReadonlyMap; copy into a mutable Map so the
-    // public Http2Response.headers contract (ReadonlyMap) is satisfied.
-    stream.responseHeaders = new Map(decoded);
+    // The CONNECTION-scoped decoder keeps the dynamic table in sync across
+    // every inbound header block — the peer's encoder indexes into entries it
+    // inserted on earlier responses (bugs/h2-hpack-reuse-desync).
+    const decoded = hpackDecoder.decode(block);
+    stream.responseHeaders = new Map(decoded.map((field) => [field.name, field.value] as const));
     stream.headersComplete = true;
 }
 
@@ -277,6 +278,24 @@ function clampMaxFrameSize(value: number): number {
 }
 
 /**
+ * Dependencies injected into {@link createStreamManager}. Both live for the
+ * CONNECTION's lifetime — the manager is created once per connection.
+ */
+export interface StreamManagerDeps {
+    /**
+     * Connection-scoped HPACK decoder for every inbound header block
+     * (responses, PUSH_PROMISEs, CONTINUATION reassembly). HPACK dynamic
+     * table state is per-connection (RFC 7541 §4): one decoder must see all
+     * blocks in arrival order or the indexed references a stateful peer
+     * encoder emits from its second response on fail to resolve
+     * (bugs/h2-hpack-reuse-desync). Construct it with the header table size
+     * this side advertises via SETTINGS_HEADER_TABLE_SIZE. Defaults to a
+     * fresh decoder with the 4096 default limit.
+     */
+    readonly hpackDecoder?: HpackDecoder;
+}
+
+/**
  * Create a stream manager. `sendFrame` is the callback for serialized frame I/O
  * — the manager never touches the transport directly.
  *
@@ -293,11 +312,16 @@ function clampMaxFrameSize(value: number): number {
  *   - `"push", {streamId, headers}`       — a PUSH_PROMISE's request headers
  *   - `"pushResponse", {streamId, response}` — a complete pushed response
  *   - `"streamClosed", streamId`          — a stream entered `closed`
+ *   - `"headerTableSize", value` — peer's SETTINGS_HEADER_TABLE_SIZE cap for
+ *     our request encoder (consumed by the connection to clamp the encoder)
  */
 export function createStreamManager(
     sendFrame: (frame: Frame) => void,
+    deps: StreamManagerDeps = {},
 ): StreamManager & EventProvider {
     const streams = new Map<Http2StreamId, ManagedStream>();
+    /** Connection-scoped HPACK decoder — decodes EVERY inbound header block. */
+    const hpackDecoder = deps.hpackDecoder ?? new HpackDecoder();
 
     // Private internal emitter for package-internal connection-level signals.
     // NOT the shared injected EventProvider — these events are consumed only by
@@ -378,8 +402,13 @@ export function createStreamManager(
             }
             const key = Number(keyRaw);
             switch (key) {
-                // HEADER_TABLE_SIZE (0x1): HPACK table; informational here.
+                // HEADER_TABLE_SIZE (0x1): the peer caps the dynamic table
+                // size OUR request encoder may use. Forwarded to the
+                // connection, which clamps its connection-scoped encoder —
+                // announcing a larger table would be a COMPRESSION_ERROR at
+                // the peer's decoder (RFC 9113 §6.5.2, RFC 7541 §4.2).
                 case 0x1:
+                    emitEvent("headerTableSize", value);
                     break;
                 // ENABLE_PUSH (0x2): informational.
                 case 0x2:
@@ -554,9 +583,17 @@ export function createStreamManager(
 
         // Replenish the peer's send credit so it keeps flowing. Connection-level
         // WINDOW_UPDATE for the consumed octets; per-stream too while alive.
-        sendWindowUpdate(0 as Http2StreamId, frameLen);
-        if (stream.state.state !== "closed") {
-            sendWindowUpdate(stream.id, frameLen);
+        // A zero-length DATA frame (an empty final frame carrying only
+        // END_STREAM is common) consumed no credit — and a WINDOW_UPDATE with
+        // a ZERO increment is a PROTOCOL_ERROR at the peer (RFC 7540 §6.9, a
+        // connection error on stream 0), which real servers act on: iana's
+        // edge GOAWAYs the connection and the NEXT pooled request fails
+        // (bugs/h2-hpack-reuse-desync). Only replenish consumed octets.
+        if (frameLen > 0) {
+            sendWindowUpdate(0 as Http2StreamId, frameLen);
+            if (stream.state.state !== "closed") {
+                sendWindowUpdate(stream.id, frameLen);
+            }
         }
 
         // Strip padding to recover application data.
@@ -592,7 +629,7 @@ export function createStreamManager(
             return; // expect CONTINUATION frames.
         }
 
-        decodePendingHeaders(stream);
+        decodePendingHeaders(stream, hpackDecoder);
 
         // Promote a push stream from remote_reserved -> open on its first
         // HEADERS (the pushed response).
@@ -643,7 +680,7 @@ export function createStreamManager(
         streams.set(frame.promisedStreamId, promised);
         pushHeaderBytes(promised, frame.payload);
         if (frame.endHeaders) {
-            decodePendingHeaders(promised);
+            decodePendingHeaders(promised, hpackDecoder);
             // `push` is emitted exactly once: when the PUSH_PROMISE header block
             // (the promised *request* headers) reaches END_HEADERS.
             emitEvent("push", promised.id, promised.responseHeaders);
@@ -713,7 +750,7 @@ export function createStreamManager(
         if (promisedId !== undefined) {
             pendingPushContinuation.delete(frame.streamId);
         }
-        decodePendingHeaders(stream);
+        decodePendingHeaders(stream, hpackDecoder);
         if (stream.isPushPromise) {
             // Completing a PUSH_PROMISE header block: emit `push` once with the
             // promised request headers.

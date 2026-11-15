@@ -373,3 +373,35 @@ describe("stream manager — PUSH_PROMISE", () => {
         expect(pushedHeaders!.get(":path")).toBe("/pushed.css");
     });
 });
+
+describe("static-indexed :status decoding (RFC 7541 Appendix A)", () => {
+    it("reports a static-indexed 404 as statusCode 404, not the 200 default", async () => {
+        // Regression: static-table entries 8-14 were misnamed "status", so a
+        // server that static-indexes its response status (0x80|13 = 404)
+        // decoded under a name parseStatus never finds — the response
+        // silently reported the 200 default.
+        const cap = new FrameCapture();
+        const mgr = createStreamManager(cap.sendFrame.bind(cap));
+        const stream = mgr.openStream();
+
+        const resolved = new Promise<{ status: number; raw: string }>((resolve, reject) => {
+            mgr.expectResponse(stream.id, (res) => {
+                resolve({ status: res.statusCode, raw: res.headers.get(":status") ?? "" });
+            }, reject);
+        });
+
+        mgr.dispatch({
+            type: FrameType.HEADERS,
+            flags: 0x4 | 0x1, // END_HEADERS | END_STREAM — no body
+            streamId: stream.id,
+            endHeaders: true,
+            endStream: true,
+            padded: false,
+            payload: new Uint8Array([0x8d]), // indexed 13 -> :status 404
+        });
+
+        const res = await resolved;
+        expect(res.status).toBe(404);
+        expect(res.raw).toBe("404");
+    });
+});
