@@ -32,6 +32,7 @@ import type { EventProvider } from "@browsercore/contracts";
 import type { CryptoProvider } from "@browsercore/crypto";
 import {
     FrameType,
+    Http2Settings,
     systemClock,
     type Clock,
     type Frame,
@@ -44,7 +45,9 @@ import {
     type Http2StreamId,
 } from "./types.js";
 import { parseFrame, parseFrameHeader, serializeFrame, FRAME_HEADER_LENGTH } from "./frame/frame.js";
-import { encodeHeaders } from "./hpack/hpack.js";
+import { HpackDecoder, HpackEncoder } from "./hpack/hpack.js";
+import type { HeaderField } from "./hpack/types.js";
+import { DEFAULT_TABLE_SIZE_LIMIT } from "./hpack/dynamic-table.js";
 import {
     SettingsAckTimeoutError,
     GoawayReceivedError,
@@ -107,12 +110,18 @@ export class Http2ConnectionImpl implements Http2Connection {
     private readonly pseudoHeaderOrder: readonly string[] | undefined;
     /** Regular header serialization order, or undefined for insertion order. */
     private readonly headerOrder: readonly string[] | undefined;
-    /** Whether to Huffman-encode request header strings. */
-    private readonly hpackHuffman: boolean | undefined;
     /** Whether to use incremental indexing for regular headers. */
     private readonly hpackIndexing: boolean | undefined;
-    /** Max HPACK dynamic table size for the request encoder. */
-    private readonly hpackMaxTableSize: number | undefined;
+    /**
+     * The connection-scoped HPACK request encoder (configured once from
+     * {@link Http2Options.hpackHuffman} / {@link Http2Options.hpackMaxTableSize}).
+     * HPACK state is per-connection (RFC 7541 §4) — ONE encoder encodes every
+     * request on this connection so its dynamic-table size announcements and
+     * indexing decisions stay in sync with the peer's decoder
+     * (bugs/h2-hpack-reuse-desync). The decoder side is injected into the
+     * stream manager (see {@link connectHttp2}) for the same reason.
+     */
+    private readonly hpackEncoder: HpackEncoder;
 
     public constructor(
         id: Http2ConnectionId,
@@ -130,9 +139,11 @@ export class Http2ConnectionImpl implements Http2Connection {
         this.provider = provider;
         this.pseudoHeaderOrder = options.pseudoHeaderOrder;
         this.headerOrder = options.headerOrder;
-        this.hpackHuffman = options.hpackHuffman;
         this.hpackIndexing = options.hpackIndexing;
-        this.hpackMaxTableSize = options.hpackMaxTableSize;
+        this.hpackEncoder = new HpackEncoder({
+            maxTableSize: options.hpackMaxTableSize,
+            useHuffman: options.hpackHuffman,
+        });
     }
 
     // --- public Http2Connection surface ----------------------------------------
@@ -244,11 +255,14 @@ export class Http2ConnectionImpl implements Http2Connection {
     /** Encode request pseudo-headers + headers and send a HEADERS frame. */
     private sendHeaders(streamId: Http2StreamId, req: Http2Request, endStream: boolean): void {
         const headers = this.buildRequestHeaders(req);
-        const encoded = encodeHeaders(headers, {
-            indexing: this.hpackIndexing,
-            useHuffman: this.hpackHuffman,
-            maxTableSize: this.hpackMaxTableSize,
-        });
+        const block: readonly HeaderField[] = [...headers].map(([name, value]) => ({
+            name,
+            value,
+            indexing: this.hpackIndexing ?? false,
+        }));
+        // The connection-scoped encoder: its dynamic-table size updates and
+        // insert state persist across this connection's requests.
+        const encoded = this.hpackEncoder.encode(block);
         // END_HEADERS (0x4) always set; END_STREAM (0x1) when there is no body.
         const flags = 0x4 | (endStream ? 0x1 : 0);
         this.sendFrame({
@@ -407,6 +421,7 @@ export class Http2ConnectionImpl implements Http2Connection {
         // The manager emits connection-level signals we need to react to:
         //   - "goaway": stop accepting new work.
         //   - "streamClosed": free a concurrency slot.
+        //   - "headerTableSize": clamp the request encoder's dynamic table.
         // The manager's EventProvider surface types listeners as
         // `(...args: unknown[]) => void`; narrow the args from `unknown` here.
         this.manager.on("goaway", (lastStreamId: unknown, errorCode: unknown, debugData: unknown) => {
@@ -419,6 +434,13 @@ export class Http2ConnectionImpl implements Http2Connection {
         });
         this.manager.on("streamClosed", (streamId: unknown) => {
             this.onStreamClosed(streamId as Http2StreamId);
+        });
+        this.manager.on("headerTableSize", (peerLimit: unknown) => {
+            // RFC 9113 §6.5.2: SETTINGS_HEADER_TABLE_SIZE caps the table size
+            // our request encoder may use. The encoder announces the clamped
+            // limit with a size update on the next header block — only if it
+            // actually changed.
+            this.hpackEncoder.applyPeerHeaderTableSize(peerLimit as number);
         });
 
         // Fire-and-forget the read loop; it runs until the transport closes.
@@ -563,7 +585,15 @@ export async function connectHttp2(options: Http2Options): Promise<Http2Connecti
         });
     };
 
-    const manager = createStreamManager(sendFrame);
+    // Connection-scoped HPACK codec pair (RFC 7541 §4: dynamic-table state is
+    // per-connection). The decoder's limit is the table size we advertise to
+    // the peer via SETTINGS_HEADER_TABLE_SIZE; it lives in the stream manager,
+    // which decodes every inbound header block. The encoder lives on the
+    // connection instance and encodes every outbound request.
+    const hpackDecoder = new HpackDecoder(
+        options.initialSettings?.[Http2Settings.HEADER_TABLE_SIZE] ?? DEFAULT_TABLE_SIZE_LIMIT,
+    );
+    const manager = createStreamManager(sendFrame, { hpackDecoder });
     const conn = new Http2ConnectionImpl(id, options, manager, sendFrame, provider);
 
     // Write the client connection preface (RFC 7540 §3.5):

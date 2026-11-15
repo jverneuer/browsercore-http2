@@ -38,7 +38,7 @@ export type { HpackEncoderOptions } from "./hpack/encoder.js";
 export type { EncodeHeadersOptions } from "./hpack/helpers.js";
 
 export { createStreamManager } from "./stream/stream.js";
-export type { Http2Stream, StreamManager } from "./stream/stream.js";
+export type { Http2Stream, StreamManager, StreamManagerDeps } from "./stream/stream.js";
 
 export {
     FrameType,

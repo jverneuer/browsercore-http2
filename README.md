@@ -97,6 +97,12 @@ await connectHttp2({
 });
 ```
 
+HPACK state is connection-scoped: one encoder/decoder pair lives for the
+connection's whole lifetime (RFC 7541 §4), so header blocks stay decodable by
+the peer across pooled connection reuse. `hpackMaxTableSize` is announced via
+a dynamic table size update once per change and is clamped to the peer's
+`SETTINGS_HEADER_TABLE_SIZE`.
+
 ## Dependency graph
 
 ```
