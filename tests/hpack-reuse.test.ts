@@ -220,12 +220,13 @@ describe("HPACK state reuse across sequential requests on one connection", () =>
             clientFrameTypes: [],
             clientAdvertisedTableSize: undefined,
         };
-        // Response 1 inserts :status/content-type/x-trace via incremental
-        // literals. Dynamic table after block 1 (newest = 62):
-        //   62 = x-trace "res-1", 63 = content-type, 64 = :status "200"
-        // Response 2 references 64 and 63 as indexed fields, then inserts a
-        // new x-trace (becomes 62). Response 3 references 65/64 after the
-        // shift. Exactly what a real server's encoder does from request 2 on.
+        // Response 1 encodes :status 200 via its STATIC index (8 — what real
+        // servers emit as 0x88) and inserts content-type/x-trace via
+        // incremental literals. Dynamic table after block 1 (newest = 62):
+        //   62 = x-trace "res-1", 63 = content-type
+        // Response 2 references 63 as an indexed field, then inserts a new
+        // x-trace (becomes 62, shifting content-type to 64 for response 3).
+        // Exactly what a real server's encoder does from request 2 on.
         const responseBlock = (n: number): Uint8Array => {
             if (n === 1) {
                 return encodeHeaders(
@@ -237,10 +238,9 @@ describe("HPACK state reuse across sequential requests on one connection", () =>
                     { indexing: true },
                 );
             }
-            const statusIndex = n === 2 ? 64 : 65;
             const contentTypeIndex = n === 2 ? 63 : 64;
             return concatBytes([
-                indexedField(statusIndex),
+                indexedField(8), // :status 200 — static index 8
                 indexedField(contentTypeIndex),
                 encodeHeaders(new Map<string, string>([["x-trace", `res-${n}`]]), { indexing: true }),
             ]);

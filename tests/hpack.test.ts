@@ -92,6 +92,21 @@ describe("indexed header field (RFC 7541 §6.1)", () => {
         expect(decoded).toEqual([{ name: ":method", value: "GET", indexing: false }]);
     });
 
+    it("resolves the static :status entries with their pseudo-header name (RFC 7541 Appendix A)", () => {
+        // Regression: entries 8-14 were misnamed "status" (no colon), so a
+        // server that static-indexes the response status decoded under a name
+        // `parseStatus` never finds — every such response silently became 200.
+        const dec = new HpackDecoder();
+        // 0x80 | 13 = indexed 13 -> ":status" = "404".
+        const decoded = dec.decode(new Uint8Array([0x8d]));
+        expect(decoded).toEqual([{ name: ":status", value: "404", indexing: false }]);
+        // 0x80 | 8 = indexed 8 -> ":status" = "200".
+        expect(dec.decode(new Uint8Array([0x88]))[0]).toMatchObject({
+            name: ":status",
+            value: "200",
+        });
+    });
+
     it("throws when the indexed name is zero", () => {
         const dec = new HpackDecoder();
         // 0x80 = indexed index 0, which is not a valid entry.
@@ -169,6 +184,15 @@ describe("encoder static-table indexing (RFC 7541 §6.1, §6.2)", () => {
         // :path / = static index 4 -> 0x80 | 4 = 0x84.
         const bytes = enc.encode([{ name: ":path", value: "/", indexing: false }]);
         expect(Array.from(bytes)).toEqual([0x84]);
+    });
+
+    it("static-indexes the :status entries (8-14) exactly as servers do", () => {
+        const enc = new HpackEncoder();
+        // :status 404 = static index 13 -> 0x80 | 13 = 0x8d. Before the
+        // Appendix A name fix this fell through to a literal because the
+        // table's "status" never matched a ":status" field.
+        const bytes = enc.encode([{ name: ":status", value: "404", indexing: true }]);
+        expect(Array.from(bytes)).toEqual([0x8d]);
     });
 
     it("emits a literal referencing a static name index when only the name matches", () => {

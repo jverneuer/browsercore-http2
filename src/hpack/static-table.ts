@@ -1,9 +1,13 @@
 /**
  * HPACK static table (RFC 7541 Appendix A).
  *
- * The 61 canonical header entries, indexed 1..61. Each entry contributes
- * `name.length + value.length + 32` bytes to the dynamic-table size budget
- * (§4.1), but the static table itself is never evicted.
+ * The 61 canonical header entries, indexed 1..61. Names are verbatim from the
+ * RFC — including the leading colon on the ":status" entries (8-14): dropping
+ * it made static-indexed response statuses decode under a "status" name, so
+ * `parseStatus` missed them and silently defaulted every such response to 200.
+ * Each entry contributes `name.length + value.length + 32` bytes to the
+ * dynamic-table size budget (§4.1), but the static table itself is never
+ * evicted.
  */
 
 /** A single static-table entry — name + optional value. */
@@ -21,13 +25,13 @@ export const STATIC_TABLE: readonly StaticEntry[] = [
     { name: ":path", value: "/index.html" },
     { name: ":scheme", value: "http" },
     { name: ":scheme", value: "https" },
-    { name: "status", value: "200" },
-    { name: "status", value: "204" },
-    { name: "status", value: "206" },
-    { name: "status", value: "304" },
-    { name: "status", value: "400" },
-    { name: "status", value: "404" },
-    { name: "status", value: "500" },
+    { name: ":status", value: "200" },
+    { name: ":status", value: "204" },
+    { name: ":status", value: "206" },
+    { name: ":status", value: "304" },
+    { name: ":status", value: "400" },
+    { name: ":status", value: "404" },
+    { name: ":status", value: "500" },
     { name: "accept-charset", value: "" },
     { name: "accept-encoding", value: "gzip, deflate" },
     { name: "accept-language", value: "" },
