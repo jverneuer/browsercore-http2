@@ -236,10 +236,132 @@ export interface Http2Request {
     readonly body: Uint8Array | undefined;
 }
 
+/** A single decoded header pair, in wire order (no HPACK indexing detail). */
+export interface DecodedHeaderPair {
+    readonly name: string;
+    readonly value: string;
+}
+
+/**
+ * Decoded HTTP/2 headers — the container handed to consumers after HPACK
+ * decode (`Http2Response.headers`, pushed-response headers, the stream
+ * manager's `"push"` event payload).
+ *
+ * Two views over the SAME wire data:
+ *
+ * - **Flat record (backward compatible):** the container IS a
+ *   `ReadonlyMap<string, string>`. Its view keeps one entry per field name
+ *   and is LAST-WINS for repeated fields — `get()`/`entries()` return only
+ *   the last value a field carried. This is the historic behaviour, kept
+ *   exactly for compatibility; RFC 9113 §8.2.3 allows a recipient to rebuild
+ *   repeated fields into one comma-separated value, so consumers that only
+ *   see the flat record never observe the earlier values.
+ * - **Multi-value fidelity:** {@link DecodedHeaders.getHeaderValues} returns
+ *   EVERY value a field carried, in wire order — the multi-`Set-Cookie` path
+ *   (RFC 9113 §8.2.3: a sender MUST send multiple `Set-Cookie` fields as
+ *   separate fields; they are NOT foldable into one comma-joined value).
+ *
+ * Pseudo-headers stay single-valued here: a block with a duplicate
+ * pseudo-header field is malformed (RFC 9113 §8.3) and is rejected at
+ * assembly (`MalformedHeadersError`), so this container never carries two
+ * values for one pseudo-header name.
+ */
+export interface DecodedHeaders extends ReadonlyMap<string, string> {
+    /**
+     * All values for a field, in wire order. Empty array if the field is
+     * absent.
+     *
+     * Lookup matches the field name case-insensitively (HTTP field names are
+     * case-insensitive, RFC 9110 §5.1); on the HTTP/2 wire they are lowercase
+     * (RFC 9113 §8.2), so passing the lowercase wire name is the norm.
+     */
+    getHeaderValues(name: string): readonly string[];
+}
+
+/**
+ * The immutable {@link DecodedHeaders} implementation the stream manager
+ * assembles after HPACK decode.
+ *
+ * The ordered pair list is the fidelity source, threaded from HPACK decode
+ * WITHOUT deduplication; the flat record is derived from it (last-wins via
+ * `Map.set`). One object, both views — no divergence is possible.
+ */
+export class DecodedHeadersImpl implements DecodedHeaders {
+    /** Every decoded pair, in wire order — duplicates preserved. */
+    private readonly orderedPairs: readonly DecodedHeaderPair[];
+    /** Derived flat record: last-wins per name, first-occurrence iteration order. */
+    private readonly flat: ReadonlyMap<string, string>;
+
+    constructor(pairs: readonly DecodedHeaderPair[]) {
+        this.orderedPairs = pairs;
+        this.flat = new Map(pairs.map((pair) => [pair.name, pair.value] as const));
+    }
+
+    /** @inheritdoc */
+    public getHeaderValues(name: string): readonly string[] {
+        const needle = name.toLowerCase();
+        const values: string[] = [];
+        for (const pair of this.orderedPairs) {
+            if (pair.name.toLowerCase() === needle) {
+                values.push(pair.value);
+            }
+        }
+        return values;
+    }
+
+    /** @inheritdoc */
+    public get(key: string): string | undefined {
+        return this.flat.get(key);
+    }
+
+    /** @inheritdoc */
+    public has(key: string): boolean {
+        return this.flat.has(key);
+    }
+
+    /** @inheritdoc */
+    public get size(): number {
+        return this.flat.size;
+    }
+
+    /** @inheritdoc */
+    public keys(): MapIterator<string> {
+        return this.flat.keys();
+    }
+
+    /** @inheritdoc */
+    public values(): MapIterator<string> {
+        return this.flat.values();
+    }
+
+    /** @inheritdoc */
+    public entries(): MapIterator<[string, string]> {
+        return this.flat.entries();
+    }
+
+    /** @inheritdoc */
+    public [Symbol.iterator](): MapIterator<[string, string]> {
+        return this.flat[Symbol.iterator]();
+    }
+
+    /** @inheritdoc */
+    public forEach(
+        callback: (value: string, key: string, map: ReadonlyMap<string, string>) => void,
+        thisArg?: unknown,
+    ): void {
+        this.flat.forEach(callback, thisArg);
+    }
+}
+
 /** A response on an HTTP/2 stream. */
 export interface Http2Response {
     readonly statusCode: number;
-    readonly headers: ReadonlyMap<string, string>;
+    /**
+     * Decoded response headers. Flat view is LAST-WINS for repeated fields
+     * (backward compatible); `getHeaderValues(name)` returns every value in
+     * wire order — see {@link DecodedHeaders}.
+     */
+    readonly headers: DecodedHeaders;
     readonly body: Uint8Array;
 }
 

@@ -34,16 +34,23 @@
 
 import { InternalEventEmitter } from "../internal-emitter.js";
 import type { EventProvider } from "@browsercore/contracts";
-import type {
-    FlowControlWindow,
-    Frame,
-    Http2Response,
-    Http2StreamId,
-    StreamState,
+import {
+    DecodedHeadersImpl,
+    type DecodedHeaders,
+    type FlowControlWindow,
+    type Frame,
+    type Http2Response,
+    type Http2StreamId,
+    type StreamState,
 } from "../types.js";
-import { HpackDecoder } from "../hpack/hpack.js";
+import { HpackDecoder, type HeaderBlock } from "../hpack/hpack.js";
 import { DEFAULT_MAX_FRAME_SIZE } from "../frame/frame.js";
-import { GoawayReceivedError, RstStreamError, StreamClosedError } from "../errors.js";
+import {
+    GoawayReceivedError,
+    MalformedHeadersError,
+    RstStreamError,
+    StreamClosedError,
+} from "../errors.js";
 
 /** A single HTTP/2 stream — state + flow-control windows. */
 export interface Http2Stream {
@@ -107,6 +114,13 @@ const DEFAULT_MAX_CONCURRENT_STREAMS = 100;
 /** Byte type alias that satisfies the `Uint8Array` wire signatures. */
 type Bytes = Uint8Array;
 
+/**
+ * Placeholder decoded-headers container for streams that have not yet received
+ * (or have failed to decode) their header block. Replaced by
+ * {@link decodeAndAttachHeaders} once a valid block decodes.
+ */
+const EMPTY_DECODED_HEADERS: DecodedHeaders = new DecodedHeadersImpl([]);
+
 // ---------------------------------------------------------------------------
 // Internal managed-stream shape
 // ---------------------------------------------------------------------------
@@ -124,7 +138,12 @@ class ManagedStream implements Http2Stream {
     // --- response accumulation -------------------------------------------------
     public headersComplete = false;
     public endStreamSeen = false;
-    public responseHeaders = new Map<string, string>();
+    /**
+     * Decoded headers as a {@link DecodedHeaders} container — the ordered pair
+     * list from HPACK decode is preserved inside it (duplicates intact); the
+     * flat record is its derived last-wins view.
+     */
+    public responseHeaders: DecodedHeaders = EMPTY_DECODED_HEADERS;
     public responseChunks: Bytes[] = [];
     public pendingHeaderBytes: number[] = [];
 
@@ -211,19 +230,47 @@ function parseStatus(headers: ReadonlyMap<string, string>): number {
 // Module-scope shared helpers
 //
 // These helpers only reference module-level symbols (`ManagedStream`,
-// `decodeHeaders`), so they are defined once at module scope rather than
+// `HeaderBlock`), so they are defined once at module scope rather than
 // rebuilt on every `createStreamManager()` call.
 // ---------------------------------------------------------------------------
 
-function decodePendingHeaders(stream: ManagedStream, hpackDecoder: HpackDecoder): void {
+/**
+ * Reassemble a stream's pending header-block bytes and HPACK-decode them.
+ *
+ * Pure decode step — the returned {@link HeaderBlock} is the full ordered pair
+ * list exactly as the peer sent it, WITHOUT deduplication (duplicate regular
+ * fields are legal per RFC 9113 §8.2.3, e.g. multiple `Set-Cookie`). The flat
+ * record is derived from this list later, inside `DecodedHeadersImpl`.
+ *
+ * The CONNECTION-scoped decoder keeps the dynamic table in sync across every
+ * inbound header block — the peer's encoder indexes into entries it inserted
+ * on earlier responses (bugs/h2-hpack-reuse-desync).
+ */
+function decodePendingHeaderBlock(stream: ManagedStream, hpackDecoder: HpackDecoder): HeaderBlock {
     const block = Uint8Array.from(stream.pendingHeaderBytes);
     stream.pendingHeaderBytes = [];
-    // The CONNECTION-scoped decoder keeps the dynamic table in sync across
-    // every inbound header block — the peer's encoder indexes into entries it
-    // inserted on earlier responses (bugs/h2-hpack-reuse-desync).
-    const decoded = hpackDecoder.decode(block);
-    stream.responseHeaders = new Map(decoded.map((field) => [field.name, field.value] as const));
-    stream.headersComplete = true;
+    return hpackDecoder.decode(block);
+}
+
+/**
+ * Reject the block when a pseudo-header field is duplicated. Pseudo-headers
+ * MUST appear at most once per header block (RFC 9113 §8.3); a duplicate
+ * makes the request or response malformed. Regular fields are NOT checked —
+ * repeats there are legal and must be preserved (`DecodedHeaders`).
+ *
+ * @returns the first duplicated pseudo-header name, or `undefined` if valid.
+ */
+function findDuplicatePseudoHeader(decoded: HeaderBlock): string | undefined {
+    const seen = new Set<string>();
+    for (const field of decoded) {
+        if (field.name.startsWith(":")) {
+            if (seen.has(field.name)) {
+                return field.name;
+            }
+            seen.add(field.name);
+        }
+    }
+    return undefined;
 }
 
 function handlePriority(): void {
@@ -524,6 +571,29 @@ export function createStreamManager(
         reject(err);
     }
 
+    /**
+     * Decode a stream's pending header block and attach it as the stream's
+     * response headers. A STREAM-level assembly step: a duplicate pseudo-header
+     * makes the block malformed (RFC 9113 §8.3), which rejects THIS stream
+     * (`MalformedHeadersError`) without tearing down the connection; a valid
+     * block is wrapped in `DecodedHeadersImpl`, which keeps the full ordered
+     * pair list (duplicates intact) and derives the last-wins flat record.
+     *
+     * @returns `false` when the block was malformed (the stream is already
+     * rejected/finalized and the caller must return without further handling).
+     */
+    function decodeAndAttachHeaders(stream: ManagedStream): boolean {
+        const decoded = decodePendingHeaderBlock(stream, hpackDecoder);
+        const duplicatePseudo = findDuplicatePseudoHeader(decoded);
+        if (duplicatePseudo !== undefined) {
+            rejectStream(stream, new MalformedHeadersError(stream.id, duplicatePseudo));
+            return false;
+        }
+        stream.responseHeaders = new DecodedHeadersImpl(decoded);
+        stream.headersComplete = true;
+        return true;
+    }
+
     // --- dispatch --------------------------------------------------------------
 
     function dispatch(frame: Frame): void {
@@ -629,7 +699,9 @@ export function createStreamManager(
             return; // expect CONTINUATION frames.
         }
 
-        decodePendingHeaders(stream, hpackDecoder);
+        if (!decodeAndAttachHeaders(stream)) {
+            return; // malformed block — the stream is already rejected.
+        }
 
         // Promote a push stream from remote_reserved -> open on its first
         // HEADERS (the pushed response).
@@ -680,7 +752,9 @@ export function createStreamManager(
         streams.set(frame.promisedStreamId, promised);
         pushHeaderBytes(promised, frame.payload);
         if (frame.endHeaders) {
-            decodePendingHeaders(promised, hpackDecoder);
+            if (!decodeAndAttachHeaders(promised)) {
+                return; // malformed block — the promised stream is already rejected.
+            }
             // `push` is emitted exactly once: when the PUSH_PROMISE header block
             // (the promised *request* headers) reaches END_HEADERS.
             emitEvent("push", promised.id, promised.responseHeaders);
@@ -750,7 +824,9 @@ export function createStreamManager(
         if (promisedId !== undefined) {
             pendingPushContinuation.delete(frame.streamId);
         }
-        decodePendingHeaders(stream, hpackDecoder);
+        if (!decodeAndAttachHeaders(stream)) {
+            return; // malformed block — the stream is already rejected.
+        }
         if (stream.isPushPromise) {
             // Completing a PUSH_PROMISE header block: emit `push` once with the
             // promised request headers.

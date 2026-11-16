@@ -16,7 +16,8 @@ export type Http2ErrorKind =
     | "FrameParseError"
     | "SettingsAckTimeoutError"
     | "ConnectionClosedError"
-    | "StreamClosedError";
+    | "StreamClosedError"
+    | "MalformedHeadersError";
 
 /** Base class for all HTTP/2 errors. */
 export class Http2Error extends Error {
@@ -152,5 +153,27 @@ export class StreamClosedError extends Http2Error {
         this.name = "StreamClosedError";
         this.streamId = streamId;
         this.cause = options?.cause;
+    }
+}
+
+/**
+ * A decoded header block is malformed: a pseudo-header field appeared more
+ * than once. Pseudo-headers MUST be unique in a header block (RFC 9113 §8.3)
+ * — duplicates make the request or response malformed, which is a STREAM
+ * error, so the affected stream is torn down while the connection stays up.
+ */
+export class MalformedHeadersError extends Http2Error {
+    public override readonly kind = "MalformedHeadersError" as const;
+    public readonly streamId: Http2StreamId;
+    /** The duplicated pseudo-header name (e.g. `":path"`). */
+    public readonly field: string;
+
+    constructor(streamId: Http2StreamId, field: string) {
+        super(
+            `malformed header block on stream ${streamId}: duplicate pseudo-header "${field}" (RFC 9113 §8.3)`,
+        );
+        this.name = "MalformedHeadersError";
+        this.streamId = streamId;
+        this.field = field;
     }
 }

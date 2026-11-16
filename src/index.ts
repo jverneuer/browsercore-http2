@@ -13,6 +13,7 @@ export {
     FrameParseError,
     GoawayReceivedError,
     Http2Error,
+    MalformedHeadersError,
     RstStreamError,
     SettingsAckTimeoutError,
     StreamClosedError,
@@ -48,6 +49,8 @@ export {
     type Clock,
     type ContinuationFrame,
     type DataFrame,
+    type DecodedHeaderPair,
+    type DecodedHeaders,
     type FlowControlWindow,
     type Frame,
     type GoawayFrame,
@@ -71,5 +74,7 @@ export {
     type StreamState,
     type WindowUpdateFrame,
 } from "./types.js";
+
+export { DecodedHeadersImpl } from "./types.js";
 
 export { assertNever, createId, generateHttp2GreaseValue } from "./utils.js";
