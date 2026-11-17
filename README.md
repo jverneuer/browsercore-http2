@@ -118,8 +118,32 @@ a dynamic table size update once per change and is clamped to the peer's
 ```
 
 `@browsercore/contracts` supplies the `EventProvider` interface the package
-implements (injected, never imported from a concrete `node:events` backend).
+implements (injected, never imported from a concrete `node:events` backend)
+and the canonical `Clock` injected via `Http2Options.clock` (see below).
 No other `@browsercore/*` packages are imported.
+
+## Canonical Clock (0.2.14)
+
+Since 0.2.14 `Http2Options.clock` is typed as the canonical `Clock` from
+`@browsercore/contracts` — the single time interface every protocol package
+injects (the replaceability audit's five package-local Clock shapes are being
+collapsed onto it). The local `{ now, setTimeout(cb, ms), clearTimeout }`
+subset http2 used to declare is gone; the canonical surface is:
+
+- `now()` — wall-clock epoch ms (timestamps, ids)
+- `monotonic()` — monotonic ms (elapsed/deadline math; never compare against `now()`)
+- `sleep(ms)` — promise-based delay
+- `setTimeout(ms, fn)` / `clearTimeout(handle)` — ms-first one-shot timers with
+  an opaque `TimerHandle` (callers never treat the handle as a `NodeJS.Timeout`
+  or number)
+
+http2 uses `now()` (connection ids) and `setTimeout`/`clearTimeout` (the
+SETTINGS-ACK quiet timeout). The default `systemClock` delegates to the
+platform globals (`Date.now()`, `performance.now()`, global timers) and
+implements the full shape — callers that previously passed a
+callback-first `{ now, setTimeout, clearTimeout }` object must flip their
+`setTimeout` to ms-first and return an opaque handle (import `Clock` /
+`TimerHandle` from `@browsercore/contracts`, re-exported by this package).
 
 ## Position in BrowserCore
 

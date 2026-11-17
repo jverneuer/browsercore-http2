@@ -41,12 +41,16 @@ export type { EncodeHeadersOptions } from "./hpack/helpers.js";
 export { createStreamManager } from "./stream/stream.js";
 export type { Http2Stream, StreamManager, StreamManagerDeps } from "./stream/stream.js";
 
+// Canonical time contract — re-exported from @browsercore/contracts so the
+// barrel surface (Clock for Http2Options.clock implementers, TimerHandle for
+// their setTimeout returns) survives the deletion of the package-local Clock.
+export type { Clock, TimerHandle } from "@browsercore/contracts";
+
 export {
     FrameType,
     Http2Settings,
     systemClock,
     type BaseFrame,
-    type Clock,
     type ContinuationFrame,
     type DataFrame,
     type DecodedHeaderPair,

@@ -28,12 +28,11 @@
  *   - PRIORITY frames are accepted but do not reorder the send queue.
  */
 
-import type { CryptoProvider, EventProvider } from "@browsercore/contracts";
+import type { Clock, CryptoProvider, EventProvider } from "@browsercore/contracts";
 import {
     FrameType,
     Http2Settings,
     systemClock,
-    type Clock,
     type Frame,
     type Http2Connection,
     type Http2ConnectionId,
@@ -542,11 +541,12 @@ export class Http2ConnectionImpl implements Http2Connection {
         return new Promise<void>((resolve, reject) => {
             this.settingsAckReject = reject;
 
-            const timer = this.clock.setTimeout(() => {
+            // Canonical Clock: ms-first setTimeout returning an opaque TimerHandle.
+            const timer = this.clock.setTimeout(timeoutMs, () => {
                 this.settingsAckReject = null;
                 this.manager.off("settingsAck", onAck);
                 reject(new SettingsAckTimeoutError(timeoutMs));
-            }, timeoutMs);
+            });
 
             const onAck = (): void => {
                 this.settingsAckReject = null;
