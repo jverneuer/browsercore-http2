@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FrameType, Http2Settings } from "../src/types.js";
+import { FrameType, Http2Settings, type Http2StreamId } from "../src/types.js";
 import {
     FlowControlError,
     FrameParseError,
@@ -8,6 +8,9 @@ import {
     SettingsAckTimeoutError,
 } from "../src/errors.js";
 import { serializeFrame, parseFrame, parseFrameHeader, FRAME_HEADER_LENGTH } from "../src/frame/frame.js";
+
+/** Brand a raw stream id the way src does at trust boundaries (standards §14). */
+const ID = (n: number): Http2StreamId => n as Http2StreamId;
 
 describe("frame header round trip", () => {
     it("serializes and parses a frame header back to the same fields", () => {
@@ -64,7 +67,7 @@ describe("SettingsFrame serialization", () => {
 
 describe("error classes", () => {
     it("instantiates GoawayReceivedError with fields", () => {
-        const err = new GoawayReceivedError(7, 0x1, new Uint8Array([1, 2, 3]));
+        const err = new GoawayReceivedError(ID(7), 0x1, new Uint8Array([1, 2, 3]));
         expect(err.kind).toBe("GoawayReceivedError");
         expect(err.lastStreamId).toBe(7);
         expect(err.errorCode).toBe(0x1);
@@ -72,7 +75,7 @@ describe("error classes", () => {
     });
 
     it("instantiates RstStreamError with fields", () => {
-        const err = new RstStreamError(3, 0x2);
+        const err = new RstStreamError(ID(3), 0x2);
         expect(err.kind).toBe("RstStreamError");
         expect(err.streamId).toBe(3);
         expect(err.errorCode).toBe(0x2);

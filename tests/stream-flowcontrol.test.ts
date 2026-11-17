@@ -12,7 +12,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { createStreamManager } from "../src/stream/stream.js";
+// ManagedStream: white-box cast for sendQueue assertions (flow-control internals).
+import { createStreamManager, type ManagedStream } from "../src/stream/stream.js";
 import type { Frame, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
 
@@ -146,7 +147,7 @@ describe("INITIAL_WINDOW_SIZE delta on existing streams", () => {
         // without touching the (large) connection window.
         mgr.dispatch(SETTINGS({ [0x4]: 100 }));
         cap.clear();
-        const stream = mgr.openStream(); // stream window 100
+        const stream = mgr.openStream() as ManagedStream; // stream window 100
         expect(stream.localWindow.size).toBe(100);
 
         mgr.sendData(stream.id, new Uint8Array(200).fill(0x61), true);
@@ -178,7 +179,7 @@ describe("drainSendQueue — connection-window exhaustion", () => {
     it("stops draining when the connection send window reaches zero", () => {
         const cap = new FrameCapture();
         const mgr = createStreamManager(cap.sendFrame.bind(cap));
-        const stream = mgr.openStream();
+        const stream = mgr.openStream() as ManagedStream;
 
         // Send 70_000 bytes: connection window (65535) + stream window (65535) both
         // bottom out; the surplus stays queued.
@@ -209,7 +210,7 @@ describe("WINDOW_UPDATE dispatch", () => {
     it("connection-level WINDOW_UPDATE (streamId 0) grows the connection window", () => {
         const cap = new FrameCapture();
         const mgr = createStreamManager(cap.sendFrame.bind(cap));
-        const s = mgr.openStream();
+        const s = mgr.openStream() as ManagedStream;
         // Send 70_000 bytes: both windows (stream + connection) bottom out, 4465 queued.
         mgr.sendData(s.id, new Uint8Array(70_000).fill(0x61), false);
         const before = cap.dataBytes(); // 65535

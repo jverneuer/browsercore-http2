@@ -78,7 +78,7 @@ function makeConn(): {
         frames.push(f);
     };
     const manager = createStreamManager(sendFrame);
-    const conn = new Http2ConnectionImpl(CONN_ID, { transport, events: createMockEventProvider() }, manager, sendFrame, crypto);
+    const conn = new Http2ConnectionImpl(CONN_ID, { transport, crypto, events: createMockEventProvider() }, manager, sendFrame, crypto);
     return { conn, transport, frames, manager };
 }
 
@@ -129,7 +129,7 @@ describe("close() behavior", () => {
         const sendFrame = (f: Frame): void => {
             if (f.type === FrameType.GOAWAY) throw new Error("write broken");
         };
-        const conn = new Http2ConnectionImpl(CONN_ID, { transport, events: createMockEventProvider() }, manager, sendFrame, crypto);
+        const conn = new Http2ConnectionImpl(CONN_ID, { transport, crypto, events: createMockEventProvider() }, manager, sendFrame, crypto);
         // Must not reject despite the GOAWAY send throwing.
         await expect(conn.close()).resolves.toBeUndefined();
         expect(transport.state.state).toBe("closed");
@@ -445,7 +445,6 @@ describe("request with a request body", () => {
                     settings: {},
                 }),
             );
-            let sawData = false;
             for (;;) {
                 let frame: Frame;
                 try {
@@ -474,7 +473,6 @@ describe("request with a request body", () => {
                         }),
                     );
                 }
-                if (frame.type === FrameType.DATA) sawData = true;
             }
         })();
 
@@ -491,9 +489,8 @@ describe("request with a request body", () => {
         // The server observed the request DATA frame we sent.
         await conn.close();
         await serverDone;
-        // sawData is captured by the closure above; assert via the server having
-        // progressed past HEADERS (it would hang otherwise). The response resolved,
-        // proving the HEADERS+DATA send path executed.
+        // The response resolving proves the server progressed past HEADERS
+        // (it would hang otherwise): the HEADERS+DATA send path executed.
     });
 });
 
@@ -507,7 +504,7 @@ describe("slot release on stream completion", () => {
             frames.push(f);
         };
         const manager = createStreamManager(sendFrame);
-        const conn = new Http2ConnectionImpl(CONN_ID, { transport, events: createMockEventProvider() }, manager, sendFrame, crypto);
+        const conn = new Http2ConnectionImpl(CONN_ID, { transport, crypto, events: createMockEventProvider() }, manager, sendFrame, crypto);
         manager.dispatch({
             type: FrameType.SETTINGS,
             flags: 0,
@@ -564,7 +561,7 @@ describe("read-loop frame reassembly across fragmented reads", () => {
             frames.push(f);
         };
         const manager = createStreamManager(sendFrame);
-        const conn = new Http2ConnectionImpl(CONN_ID, { transport: client, events: createMockEventProvider() }, manager, sendFrame, crypto);
+        const conn = new Http2ConnectionImpl(CONN_ID, { transport: client, crypto, events: createMockEventProvider() }, manager, sendFrame, crypto);
         conn.startReadLoop(); // readLoop now blocked on transport.read()
 
         // A SETTINGS frame advertising MAX_CONCURRENT_STREAMS=7 (6-byte payload).

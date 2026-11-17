@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { createStreamManager } from "../src/stream/stream.js";
 import type { Frame, Http2Response, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
+import { RstStreamError } from "../src/errors.js";
 import { encodeHeaders } from "../src/hpack/hpack.js";
 
 const ID = (n: number): Http2StreamId => n as Http2StreamId;
@@ -105,8 +106,11 @@ describe("transitionOnEndStream", () => {
             payload: new Uint8Array(0),
         });
 
-        expect(stream.state.state).toBe("closed");
-        expect((stream.state as { reason: { kind: string } }).reason.kind).toBe("normal");
+        // Assert the full post-dispatch state via deep equality: the
+        // local_half_closed assignment above pins TS's narrowing of
+        // `stream.state` across dispatch() (which moves the stream to closed
+        // at runtime), so member access would not typecheck.
+        expect(stream.state).toEqual({ state: "closed", reason: { kind: "normal" } });
     });
 
     it("moves remote_reserved -> closed on END_STREAM", () => {
@@ -205,8 +209,10 @@ describe("unknown-stream guards (no throw, no frames)", () => {
             mgr.expectResponse(ID(999), () => reject(new Error("no")), resolve),
         );
         const err = await done;
-        expect(err).toBeInstanceOf(Error);
-        expect((err as { streamId: number }).streamId).toBe(999);
+        expect(err).toBeInstanceOf(RstStreamError);
+        if (err instanceof RstStreamError) {
+            expect(err.streamId).toBe(ID(999));
+        }
     });
 
     it("sendData on an unknown stream is a no-op", () => {

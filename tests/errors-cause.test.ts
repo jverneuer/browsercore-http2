@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import type { Http2StreamId } from "../src/types.js";
 import {
     Http2Error,
     FlowControlError,
@@ -16,6 +17,9 @@ import {
     RstStreamError,
     SettingsAckTimeoutError,
 } from "../src/errors.js";
+
+/** Brand a raw stream id the way src does at trust boundaries (standards §14). */
+const ID = (n: number): Http2StreamId => n as Http2StreamId;
 
 describe("Http2Error (base)", () => {
     it("stores an optional cause and reports its class name", () => {
@@ -36,14 +40,14 @@ describe("Http2Error (base)", () => {
 describe("error subclasses carry an optional cause", () => {
     it("GoawayReceivedError stores cause", () => {
         const inner = new Error("x");
-        const err = new GoawayReceivedError(7, 0x1, new Uint8Array([1]), { cause: inner });
+        const err = new GoawayReceivedError(ID(7), 0x1, new Uint8Array([1]), { cause: inner });
         expect(err.cause).toBe(inner);
         expect(err.lastStreamId).toBe(7);
     });
 
     it("RstStreamError stores cause", () => {
         const inner = new Error("x");
-        const err = new RstStreamError(3, 0x2, { cause: inner });
+        const err = new RstStreamError(ID(3), 0x2, { cause: inner });
         expect(err.cause).toBe(inner);
     });
 
@@ -67,8 +71,8 @@ describe("error subclasses carry an optional cause", () => {
 
     it("subclasses have undefined cause without options", () => {
         // Exercises the `?.` undefined branch on each subclass.
-        expect(new GoawayReceivedError(1, 0, new Uint8Array()).cause).toBeUndefined();
-        expect(new RstStreamError(1, 0).cause).toBeUndefined();
+        expect(new GoawayReceivedError(ID(1), 0, new Uint8Array()).cause).toBeUndefined();
+        expect(new RstStreamError(ID(1), 0).cause).toBeUndefined();
         expect(new FlowControlError(1, 2).cause).toBeUndefined();
         expect(new FrameParseError(0).cause).toBeUndefined();
         expect(new SettingsAckTimeoutError(1).cause).toBeUndefined();
