@@ -302,7 +302,6 @@ describe("HPACK encoder table-size announcements on connection reuse", () => {
             settings: {},
             responseBlock: () => encodeHeaders(new Map<string, string>([["x-reply", "ok"]])),
             observations,
-            done: Promise.resolve(),
         });
 
         const conn = await connectHttp2({
@@ -341,7 +340,6 @@ describe("HPACK encoder table-size announcements on connection reuse", () => {
             settings: { [Http2Settings.HEADER_TABLE_SIZE]: 256 },
             responseBlock: () => encodeHeaders(new Map<string, string>([["x-reply", "ok"]])),
             observations,
-            done: Promise.resolve(),
         });
 
         const conn = await connectHttp2({

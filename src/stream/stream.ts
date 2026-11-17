@@ -93,6 +93,23 @@ export interface StreamManager {
 
     /** Reject every in-flight request with `error` and close all streams. */
     abortAll(error: Error): void;
+
+    // --- EventProvider surface (delegated to the private internal emitter) --
+    // The generic type params are load-bearing: they let callers pass listeners
+    // whose arguments are typed (e.g. `(streamId: Http2StreamId) => void`)
+    // instead of `(...args: unknown[])` plus manual narrowing — the events
+    // carry documented payloads (see the createStreamManager docstring). Same
+    // pattern as the http3 StreamManager event surface; the underlying
+    // InternalEventEmitter stays structural (unknown args).
+    /* oxlint-disable typescript/no-unnecessary-type-parameters */
+    on<TArgs extends unknown[]>(event: string, listener: (...args: TArgs) => void): void;
+    once<TArgs extends unknown[]>(event: string, listener: (...args: TArgs) => void): void;
+    off<TArgs extends unknown[]>(event: string, listener: (...args: TArgs) => void): void;
+    /* oxlint-enable typescript/no-unnecessary-type-parameters */
+    removeListener(event: string, listener: (...args: unknown[]) => void): void;
+    removeAllListeners(event?: string): void;
+    listenerCount(event: string): number;
+    emit(event: string, ...args: unknown[]): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,8 +146,12 @@ const EMPTY_DECODED_HEADERS: DecodedHeaders = new DecodedHeadersImpl([]);
  * Internal stream record. Externally we hand out the `Http2Stream` view; this
  * adds the bookkeeping the state machine needs (response accumulation, send
  * queue, resolver) without polluting the public `Http2Stream` interface.
+ *
+ * Exported (module-level, NOT re-exported from index.ts) so white-box tests
+ * can assert flow-control internals (`sendQueue`) against the real type
+ * instead of an ad-hoc shape cast.
  */
-class ManagedStream implements Http2Stream {
+export class ManagedStream implements Http2Stream {
     public state: StreamState;
     public localWindow: FlowControlWindow;
     public remoteWindow: FlowControlWindow;
@@ -908,15 +929,22 @@ export function createStreamManager(
         get maxConcurrentStreams(): number {
             return maxConcurrentStreams;
         },
-        on: (event: string, listener: (...args: unknown[]) => void) => {
-            internalEmitter.on(event, listener);
+        // EventProvider delegation — forwards the manager's public event
+        // contract to the private internal emitter. The emitter is structural
+        // (unknown args), so typed listeners are cast on the way in. The
+        // generic params are load-bearing (see the interface note above):
+        // they let callers pass typed listeners. oxlint flags them as unused.
+        /* oxlint-disable typescript/no-unnecessary-type-parameters */
+        on: <TArgs extends unknown[]>(event: string, listener: (...args: TArgs) => void) => {
+            internalEmitter.on(event, listener as (...args: unknown[]) => void);
         },
-        once: (event: string, listener: (...args: unknown[]) => void) => {
-            internalEmitter.once(event, listener);
+        once: <TArgs extends unknown[]>(event: string, listener: (...args: TArgs) => void) => {
+            internalEmitter.once(event, listener as (...args: unknown[]) => void);
         },
-        off: (event: string, listener: (...args: unknown[]) => void) => {
-            internalEmitter.off(event, listener);
+        off: <TArgs extends unknown[]>(event: string, listener: (...args: TArgs) => void) => {
+            internalEmitter.off(event, listener as (...args: unknown[]) => void);
         },
+        /* oxlint-enable typescript/no-unnecessary-type-parameters */
         removeListener: (event: string, listener: (...args: unknown[]) => void) => {
             internalEmitter.removeListener(event, listener);
         },

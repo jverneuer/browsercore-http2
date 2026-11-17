@@ -71,7 +71,7 @@ describe("HTTP/2 error masking — transport failure during settings exchange", 
             settingsAckTimeoutMs: 5_000,
         });
         const outcome = await conn
-            .request({ method: "GET", path: "/", authority: "x" })
+            .request({ method: "GET", scheme: "https", authority: "x", path: "/", headers: new Map(), body: undefined })
             .then(
                 () => "settled",
                 (e: unknown) => e,
@@ -99,19 +99,30 @@ describe("HTTP/2 error masking — transport failure during settings exchange", 
         })();
 
         const start = Date.now();
-        const error = await connectHttp2({
+        // connectHttp2 resolves regardless (it does not gate on the ACK);
+        // the abrupt close must surface on the first request instead.
+        const conn = await connectHttp2({
             transport: client,
             crypto,
             events: createMockEventProvider(),
             settingsAckTimeoutMs: 5_000,
-        }).catch((e: Error) => e);
+        });
+        const outcome = await conn
+            .request({ method: "GET", scheme: "https", authority: "x", path: "/", headers: new Map(), body: undefined })
+            .then(
+                () => "settled",
+                (e: unknown) => e,
+            );
 
         const elapsed = Date.now() - start;
 
         // The error must arrive in under 1 second — not 5+ seconds.
         expect(elapsed).toBeLessThan(1_000);
-        // "transport closed" — not "SETTINGS ACK not received".
-        expect(error.name).not.toBe("SettingsAckTimeoutError");
+        expect(outcome).toBeInstanceOf(Error);
+        if (outcome instanceof Error) {
+            // "transport closed" — not "SETTINGS ACK not received".
+            expect(outcome.name).not.toBe("SettingsAckTimeoutError");
+        }
 
         await serverDone;
     });

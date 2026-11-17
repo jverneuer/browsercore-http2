@@ -223,6 +223,15 @@ export interface Http2Connection {
 
     /** Gracefully close the connection. */
     close(): Promise<void>;
+
+    /**
+     * Resolve when the peer acknowledges our preface SETTINGS, or reject with
+     * `SettingsAckTimeoutError` after `timeoutMs`. A timeout does NOT tear
+     * down the connection — real servers often acknowledge lazily (around
+     * the first request), so requests proceed regardless; strict callers use
+     * this to observe a missing ACK. See `Http2ConnectionImpl` for details.
+     */
+    waitForSettingsAck(timeoutMs: number): Promise<void>;
 }
 
 /** A request on an HTTP/2 stream. */

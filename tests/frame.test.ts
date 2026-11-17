@@ -313,7 +313,11 @@ describe("parse error paths", () => {
         view.setUint32(5, 0);
         const buf = new Uint8Array([...header, 0xAA, 0xBB]);
         const parsed = parseFrame(buf);
-        // The fallback returns a DATA-shaped frame carrying the raw payload.
-        expect(parsed.payload).toEqual(new Uint8Array([0xAA, 0xBB]));
+        // The fallback returns a DATA-shaped frame carrying the raw payload —
+        // narrow the Frame union before reading `payload`.
+        expect(parsed.type).toBe(FrameType.DATA);
+        if (parsed.type === FrameType.DATA) {
+            expect(parsed.payload).toEqual(new Uint8Array([0xAA, 0xBB]));
+        }
     });
 });

@@ -100,5 +100,8 @@ export function createMockCryptoProvider(): CryptoProvider {
         ecdhSharedSecret: () => notImplemented("ecdhSharedSecret"),
         verifySignature: () => notImplemented("verifySignature"),
         aesEcbEncrypt: () => notImplemented("aesEcbEncrypt"),
+        mlkem768GenerateKeyPair: () => notImplemented("mlkem768GenerateKeyPair"),
+        mlkem768Decapsulate: () => notImplemented("mlkem768Decapsulate"),
+        x25519MLKEM768SharedSecret: () => notImplemented("x25519MLKEM768SharedSecret"),
     };
 }

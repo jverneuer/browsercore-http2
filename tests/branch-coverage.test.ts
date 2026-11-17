@@ -24,12 +24,12 @@ import {
 import { encodeInteger, decodeInteger } from "../src/hpack/integer.js";
 import { HpackEncoder, HpackDecoder, HpackError } from "../src/hpack/hpack.js";
 import { DynamicTable, resolveIndex, DEFAULT_TABLE_SIZE_LIMIT } from "../src/hpack/dynamic-table.js";
-import { STATIC_TABLE_LENGTH } from "../src/hpack/static-table.js";
 import { serializeFrame, parseFrame, parseFrameHeader, FRAME_HEADER_LENGTH } from "../src/frame/frame.js";
 import type { Frame, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
 import { Http2ConnectionImpl, connectHttp2 } from "../src/connection.js";
-import { createStreamManager } from "../src/stream/stream.js";
+// ManagedStream: white-box cast for sendQueue assertions (flow-control internals).
+import { createStreamManager, type ManagedStream } from "../src/stream/stream.js";
 import { createFakeTransportPair, FakeTransport } from "./fake-transport.js";
 import { GoawayReceivedError, ConnectionClosedError } from "../src/errors.js";
 import type { Http2ConnectionId } from "../src/types.js";
@@ -441,7 +441,7 @@ function makeConn(): {
         frames.push(f);
     };
     const manager = createStreamManager(sendFrame);
-    const conn = new Http2ConnectionImpl(CONN_ID, { transport, events: createMockEventProvider() }, manager, sendFrame, crypto);
+    const conn = new Http2ConnectionImpl(CONN_ID, { transport, crypto, events: createMockEventProvider() }, manager, sendFrame, crypto);
     return { conn, transport, frames, manager };
 }
 
@@ -545,7 +545,7 @@ describe("connection.ts branches — readLoop wraps non-Error values in Error", 
         };
         const conn = new Http2ConnectionImpl(
             CONN_ID,
-            { transport: client, events: createMockEventProvider() },
+            { transport: client, crypto, events: createMockEventProvider() },
             manager,
             () => undefined,
             crypto,
@@ -576,7 +576,7 @@ describe("connection.ts branches — readLoop wraps non-Error values in Error", 
         const manager = createStreamManager(() => undefined);
         const conn = new Http2ConnectionImpl(
             CONN_ID,
-            { transport, events: createMockEventProvider() },
+            { transport, crypto, events: createMockEventProvider() },
             manager,
             () => undefined,
             crypto,
@@ -621,7 +621,7 @@ describe("stream.ts branches — padded DATA edge cases", () => {
     }
 
     it("strips padding when padLen equals payload length (zero data)", async () => {
-        const { cap, mgr } = makeMgr();
+        const { mgr } = makeMgr();
         const stream = mgr.openStream();
 
         const done = new Promise<{ status: number; body: Uint8Array }>((resolve, reject) =>
@@ -661,7 +661,7 @@ describe("stream.ts branches — padded DATA edge cases", () => {
     });
 
     it("strips padding when padLen consumes the entire payload (end <= 0)", async () => {
-        const { cap, mgr } = makeMgr();
+        const { mgr } = makeMgr();
         const stream = mgr.openStream();
 
         const done = new Promise<{ status: number; body: Uint8Array }>((resolve, reject) =>
@@ -1428,7 +1428,7 @@ describe("stream/stream.ts — remaining uncovered branches", () => {
             ack: false,
             settings: { [0x4]: 0 }, // INITIAL_WINDOW_SIZE = 0
         });
-        const stream = mgr.openStream();
+        const stream = mgr.openStream() as ManagedStream;
         expect(stream.localWindow.size).toBe(0);
         // Send data — the stream window is 0, so cap = 0, nothing is sent.
         mgr.sendData(stream.id, new Uint8Array(100), false);
@@ -1473,7 +1473,7 @@ describe("stream/stream.ts — remaining uncovered branches", () => {
         // Covers the `if (endStream)` false branch in sendData. When endStream
         // is false, sendQueueEndStream stays false.
         const mgr = createStreamManager(() => undefined);
-        const stream = mgr.openStream();
+        const stream = mgr.openStream() as ManagedStream;
         mgr.sendData(stream.id, new Uint8Array([0x61]), false);
         // The stream's sendQueueEndStream is not set (we can't observe it
         // directly, but we can verify the send went out without END_STREAM).

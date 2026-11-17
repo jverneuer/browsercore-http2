@@ -210,13 +210,11 @@ export class Http2ConnectionImpl implements Http2Connection {
             }
             // Resolve only on the ACK that echoes *our* opaque data. Late or
             // unrelated ACKs are ignored (the handler self-removes on match).
-            // The manager's EventProvider surface types listeners as
-            // `(...args: unknown[]) => void`, so the handler narrows the opaque
-            // data from `unknown` before comparing.
-            const handler = (acked: unknown): void => {
+            // The manager's generic event surface types the listener payload.
+            const handler = (acked: bigint): void => {
                 if (acked === data) {
                     this.manager.off("pingAck", handler);
-                    resolve(acked as bigint);
+                    resolve(acked);
                 }
             };
             this.manager.on("pingAck", handler);
@@ -443,23 +441,19 @@ export class Http2ConnectionImpl implements Http2Connection {
         //   - "headerTableSize": clamp the request encoder's dynamic table.
         // The manager's EventProvider surface types listeners as
         // `(...args: unknown[]) => void`; narrow the args from `unknown` here.
-        this.manager.on("goaway", (lastStreamId: unknown, errorCode: unknown, debugData: unknown) => {
-            this.receivedGoaway = {
-                lastStreamId: lastStreamId as Http2StreamId,
-                errorCode: errorCode as number,
-                debugData: debugData as Bytes,
-            };
+        this.manager.on("goaway", (lastStreamId: Http2StreamId, errorCode: number, debugData: Bytes) => {
+            this.receivedGoaway = { lastStreamId, errorCode, debugData };
             this.closing = true;
         });
-        this.manager.on("streamClosed", (streamId: unknown) => {
-            this.onStreamClosed(streamId as Http2StreamId);
+        this.manager.on("streamClosed", (streamId: Http2StreamId) => {
+            this.onStreamClosed(streamId);
         });
-        this.manager.on("headerTableSize", (peerLimit: unknown) => {
+        this.manager.on("headerTableSize", (peerLimit: number) => {
             // RFC 9113 §6.5.2: SETTINGS_HEADER_TABLE_SIZE caps the table size
             // our request encoder may use. The encoder announces the clamped
             // limit with a size update on the next header block — only if it
             // actually changed.
-            this.hpackEncoder.applyPeerHeaderTableSize(peerLimit as number);
+            this.hpackEncoder.applyPeerHeaderTableSize(peerLimit);
         });
 
         // Fire-and-forget the read loop; it runs until the transport closes.

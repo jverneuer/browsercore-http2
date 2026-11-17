@@ -8,7 +8,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { createStreamManager } from "../src/stream/stream.js";
+// ManagedStream: white-box cast for sendQueue assertions (flow-control internals).
+import { createStreamManager, type ManagedStream } from "../src/stream/stream.js";
 import type { Frame, Http2StreamId } from "../src/types.js";
 import { FrameType } from "../src/types.js";
 import { RstStreamError } from "../src/errors.js";
@@ -244,7 +245,7 @@ describe("stream manager — flow control", () => {
         // consume the SETTINGS ACK the manager emitted
         cap.frames.length = 0;
 
-        const stream = mgr.openStream(); // local window now = 100
+        const stream = mgr.openStream() as ManagedStream; // local window now = 100
         expect(stream.localWindow.size).toBe(100);
 
         // Send 250 bytes — only 100 should go out now.
@@ -290,7 +291,7 @@ describe("stream manager — flow control", () => {
         });
         cap.frames.length = 0;
 
-        const s1 = mgr.openStream();
+        const s1 = mgr.openStream() as ManagedStream;
         expect(s1.localWindow.size).toBe(64);
         const big = new Uint8Array(200).fill(0x62);
         mgr.sendData(s1.id, big, false);

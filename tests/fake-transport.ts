@@ -8,26 +8,21 @@
  */
 
 import { EventEmitter } from "node:events";
-import { randomFillSync } from "node:crypto";
+import type { CryptoProvider } from "@browsercore/contracts";
 import type { Transport } from "@browsercore/transport";
 import type { CloseReason, TransportId, TransportState } from "@browsercore/transport";
 
 /** A minimal stand-in for the branded transport id. */
 type Id = TransportId;
 
+import { createMockCryptoProvider } from "./test-helpers.js";
+
 /**
- * Minimal CryptoProvider for tests. The HTTP/2 layer only calls `randomBytes`
- * (for PING opaque data), so this mock is sufficient. The full CryptoProvider
- * interface lives in @browsercore/crypto but is not exported as a singleton —
- * tests inject this concrete mock.
+ * The shared test-wide CryptoProvider mock (real `randomBytes`, everything
+ * else throws). Aliased `testCrypto` for the many connection-level test
+ * files; one source of truth with test-helpers' `createMockCryptoProvider`.
  */
-export const testCrypto = {
-    randomBytes(length: number): Uint8Array {
-        const buf = new Uint8Array(length);
-        randomFillSync(buf);
-        return buf;
-    },
-};
+export const testCrypto: CryptoProvider = createMockCryptoProvider();
 
 /**
  * A pair of connected fake transports: everything written to one is readable
@@ -115,7 +110,7 @@ export class FakeTransport extends EventEmitter implements Transport {
         // reads reject and any subsequent read() sees a closed transport.
         const peer = this._peer;
         if (peer !== undefined && peer._state.state !== "closed") {
-            peer._state = { state: "closed", reason: { kind: "peer_close" } };
+            peer._state = { state: "closed", reason: { kind: "remote_close" } };
             const peerRejecter = peer._pendingReadReject;
             if (peerRejecter !== undefined) {
                 peer._pendingRead = undefined;
