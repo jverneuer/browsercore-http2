@@ -6,7 +6,7 @@
  */
 
 import type { Transport } from "@browsercore/transport";
-import type { CryptoProvider, EventProvider } from "@browsercore/contracts";
+import type { Clock, CryptoProvider, EventProvider, TimerHandle } from "@browsercore/contracts";
 
 /** Branded HTTP/2 connection identifier (opaque correlation id). */
 export type Http2ConnectionId = string & { __brand: "Http2ConnectionId" };
@@ -365,33 +365,32 @@ export interface Http2Response {
 }
 
 // ---------------------------------------------------------------------------
-// Clock abstraction (injected — decouples protocol code from the platform clock)
+// Clock (canonical — declared once in @browsercore/contracts, never locally)
 // ---------------------------------------------------------------------------
 
-/**
- * Time + timer abstraction for HTTP/2 internals. Injected via {@link Http2Options}
- * so callers control the clock — keeps the package testable (deterministic,
- * virtualizable timeouts) and decouples protocol logic from the platform
- * `Date.now()` / `setTimeout`.
- *
- * The default ({@link systemClock}) delegates to the platform globals, so
- * behavior is identical unless the caller opts in. All three methods map
- * directly onto the globals they replace.
- */
-export interface Clock {
-    /** Current epoch milliseconds — replaces `Date.now()`. */
-    now(): number;
-    /** Schedule a one-shot timer — replaces `setTimeout`. */
-    setTimeout(callback: () => void, ms: number): ReturnType<typeof setTimeout>;
-    /** Cancel a pending timer — replaces `clearTimeout`. */
-    clearTimeout(timer: ReturnType<typeof setTimeout>): void;
-}
+// The Clock interface is imported from @browsercore/contracts (0.2.6) — THE
+// canonical time source for the entire stack (replaceability audit 2026-11-16,
+// remediation item #6: five package-local Clock shapes collapsed onto one).
+// http2 previously declared a local { now, setTimeout(cb, ms), clearTimeout }
+// subset here with the runtime's timer token exposed; it now binds the full
+// canonical shape — ms-first setTimeout returning an opaque TimerHandle, plus
+// monotonic()/sleep() from the same seam.
 
-/** The default, platform-backed clock. Delegates to `Date.now()` / `setTimeout`. */
+/**
+ * The default, platform-backed clock — the platform globals (`Date.now()`,
+ * `performance.now()`, global timers), implementing the full canonical
+ * {@link Clock} shape.
+ */
 export const systemClock: Clock = {
     now: () => Date.now(),
-    setTimeout: (callback, ms) => setTimeout(callback, ms),
-    clearTimeout: (timer) => { clearTimeout(timer); },
+    monotonic: () => performance.now(),
+    sleep: (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }),
+    setTimeout: (ms: number, fn: () => void) => setTimeout(fn, ms),
+    clearTimeout: (handle: TimerHandle) => {
+        // TimerHandle is deliberately opaque; the default narrows it back to
+        // the concrete runtime timer token so the global clearTimeout accepts it.
+        clearTimeout(handle as NodeJS.Timeout);
+    },
 };
 
 /** Options for {@link connectHttp2}. */
@@ -405,8 +404,10 @@ export interface Http2Options {
     /** Timeout for receiving the peer's SETTINGS ACK. Default 5000ms. */
     readonly settingsAckTimeoutMs?: number;
     /**
-     * Clock for protocol timeouts + id generation. Defaults to
-     * {@link systemClock} — the platform `Date.now()` / `setTimeout`. Inject a
+     * Clock for protocol timeouts + id generation — the canonical `Clock`
+     * from `@browsercore/contracts` (ms-first `setTimeout(ms, fn)` returning
+     * an opaque `TimerHandle`; `monotonic()`/`sleep()` share the seam).
+     * Defaults to {@link systemClock} — the platform globals. Inject a
      * deterministic clock in tests.
      */
     readonly clock?: Clock;
