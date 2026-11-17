@@ -28,8 +28,7 @@
  *   - PRIORITY frames are accepted but do not reorder the send queue.
  */
 
-import type { EventProvider } from "@browsercore/contracts";
-import type { CryptoProvider } from "@browsercore/crypto";
+import type { CryptoProvider, EventProvider } from "@browsercore/contracts";
 import {
     FrameType,
     Http2Settings,
