@@ -13,7 +13,7 @@ HTTP/2 framing over any duplex byte stream.
 Frame parsing/serialization, HPACK header compression, stream lifecycle
 management, flow control (connection + stream level), SETTINGS exchange,
 GOAWAY graceful shutdown, PING, and PUSH_PROMISE handling. The package knows
-nothing about the underlying transport — it could be plain TCP, TLS, a pipe, or
+nothing about the underlying transport: it could be plain TCP, TLS, a pipe, or
 a test double.
 
 ## What it does NOT know about
@@ -79,7 +79,7 @@ await connectHttp2({
     transport,
     crypto,
     // SETTINGS frame: explicit id order + optional GREASE. Only listed ids
-    // are emitted — unlisted settings are dropped (browsers send a fixed set).
+    // are emitted; unlisted settings are dropped (browsers send a fixed set).
     settingsOrder: [0x1, 0x3, 0x4, 0x5, 0x6],
     settingsGrease: true,
     // Connection-level WINDOW_UPDATE (Chrome sends one early)
@@ -89,7 +89,7 @@ await connectHttp2({
         { streamId: ID(3), streamDependency: ID(0), exclusive: false, weight: 255 },
     ],
     // Pseudo-header order in request HEADERS frames (bare or colon-prefixed
-    // names both work — profiles use bare names)
+    // names both work, profiles use bare names)
     pseudoHeaderOrder: [":method", ":authority", ":scheme", ":path"],
     // Priority block on request HEADERS frames (PRIORITY flag 0x20; Chrome
     // sends flags 0x25 with exclusive dep 0, weight 0xff = logical 256)
@@ -126,22 +126,22 @@ No other `@browsercore/*` packages are imported.
 ## Canonical Clock (0.2.14)
 
 Since 0.2.14 `Http2Options.clock` is typed as the canonical `Clock` from
-`@browsercore/contracts` — the single time interface every protocol package
+`@browsercore/contracts`, the single time interface every protocol package
 injects (the replaceability audit's five package-local Clock shapes are being
 collapsed onto it). The local `{ now, setTimeout(cb, ms), clearTimeout }`
 subset http2 used to declare is gone; the canonical surface is:
 
-- `now()` — wall-clock epoch ms (timestamps, ids)
-- `monotonic()` — monotonic ms (elapsed/deadline math; never compare against `now()`)
-- `sleep(ms)` — promise-based delay
-- `setTimeout(ms, fn)` / `clearTimeout(handle)` — ms-first one-shot timers with
+- `now()`, wall-clock epoch ms (timestamps, ids)
+- `monotonic()`, monotonic ms (elapsed/deadline math; never compare against `now()`)
+- `sleep(ms)`, promise-based delay
+- `setTimeout(ms, fn)` / `clearTimeout(handle)`, ms-first one-shot timers with
   an opaque `TimerHandle` (callers never treat the handle as a `NodeJS.Timeout`
   or number)
 
 http2 uses `now()` (connection ids) and `setTimeout`/`clearTimeout` (the
 SETTINGS-ACK quiet timeout). The default `systemClock` delegates to the
 platform globals (`Date.now()`, `performance.now()`, global timers) and
-implements the full shape — callers that previously passed a
+implements the full shape, so callers that previously passed a
 callback-first `{ now, setTimeout, clearTimeout }` object must flip their
 `setTimeout` to ms-first and return an opaque handle (import `Clock` /
 `TimerHandle` from `@browsercore/contracts`, re-exported by this package).
@@ -164,7 +164,7 @@ Every higher networking layer communicates with the network exclusively through 
 
 ## Contributing
 
-Contributions are welcome — bug reports, reproductions, docs and code alike. Start with [CONTRIBUTING.md](CONTRIBUTING.md); the full guide lives in the [browsersmith repo](https://github.com/jverneuer/browsersmith/blob/main/CONTRIBUTING.md). First timer? Check the [`good first issue`](https://github.com/jverneuer/browsercore-http2/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) label. Security issues: [SECURITY.md](SECURITY.md), never a public issue.
+Contributions are welcome: bug reports, reproductions, docs and code alike. Start with [CONTRIBUTING.md](CONTRIBUTING.md); the full guide lives in the [browsersmith repo](https://github.com/jverneuer/browsersmith/blob/main/CONTRIBUTING.md). First timer? Check the [`good first issue`](https://github.com/jverneuer/browsercore-http2/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) label. Security issues: [SECURITY.md](SECURITY.md), never a public issue.
 
 ## License
 
