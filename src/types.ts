@@ -6,8 +6,7 @@
  */
 
 import type { Transport } from "@browsercore/transport";
-import type { CryptoProvider } from "@browsercore/crypto";
-import type { EventProvider } from "@browsercore/contracts";
+import type { CryptoProvider, EventProvider } from "@browsercore/contracts";
 
 /** Branded HTTP/2 connection identifier (opaque correlation id). */
 export type Http2ConnectionId = string & { __brand: "Http2ConnectionId" };
